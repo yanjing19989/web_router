@@ -206,7 +206,7 @@
       transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
     }
 
-    .project-card:hover { transform: translateY(-1px); border-color: var(--line-strong); }
+    .project-card:hover { border-color: var(--line-strong); }
     .project-card.running { border-color: color-mix(in srgb, var(--success) 34%, var(--line)); }
 
     .project-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
@@ -307,7 +307,6 @@
 
     .field-grid { display: grid; grid-template-columns: 1fr 150px; gap: 17px; }
     .field { display: grid; gap: 7px; margin-bottom: 17px; }
-    .field:last-child { margin-bottom: 0; }
     .field label { font-size: 12px; font-weight: 650; }
     .field-hint { color: var(--text-tertiary); font-size: 11px; font-weight: 400; }
     .input {
@@ -407,7 +406,7 @@
   <dialog id="project-dialog" aria-labelledby="dialog-title">
     <form id="project-form">
       <div class="dialog-head">
-        <div><h2 id="dialog-title">确认项目信息</h2><p>自动识别完成后，你可以在保存前修正配置。</p></div>
+        <div><h2 id="dialog-title">确认项目信息</h2><p id="dialog-description">自动识别完成后，你可以在保存前修正配置。</p></div>
         <button class="button button-ghost icon-only" id="close-dialog" type="button" aria-label="关闭">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 6 12 12M18 6 6 18"/></svg>
         </button>
@@ -470,10 +469,17 @@
       play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 5v14l11-7L8 5Z"/></svg>',
       stop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>',
       open: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 4h6v6m0-6-9 9"/><path d="M19 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg>',
+      edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m14 5 5 5M4 20l3.5-.7L19 7.8a2.1 2.1 0 0 0-3-3L4.7 16.3 4 20Z"/></svg>',
       trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg>'
     };
 
-    const state = { projects: [], refreshing: false, actionIds: new Set() };
+    const state = {
+      projects: [],
+      refreshing: false,
+      selectingText: false,
+      editingId: null,
+      actionIds: new Set()
+    };
     const content = document.querySelector('#project-content');
     const dialog = document.querySelector('#project-dialog');
     const form = document.querySelector('#project-form');
@@ -605,17 +611,22 @@
       actions.className = 'project-actions';
       const primary = actionButton(running ? '停止' : '启动', running ? 'stop' : 'start', running ? icons.stop : icons.play, running ? '' : 'button-primary');
       const open = actionButton('打开', 'open', icons.open);
+      const edit = actionButton('编辑', 'edit', icons.edit, 'icon-only');
       const remove = actionButton('删除', 'delete', icons.trash, 'button-danger icon-only');
+      edit.querySelector('span').remove();
+      edit.setAttribute('aria-label', '编辑项目');
+      edit.title = running ? '请先停止项目再编辑' : '编辑项目';
       remove.querySelector('span').remove();
       remove.setAttribute('aria-label', '删除项目');
       remove.title = '删除项目';
       open.disabled = !running;
+      edit.disabled = running;
       remove.disabled = running;
       if (state.actionIds.has(project.id)) {
         primary.disabled = true;
         primary.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>处理中</span>';
       }
-      actions.append(primary, open, remove);
+      actions.append(primary, open, edit, remove);
       card.append(head, metrics, details, actions);
       return card;
     }
@@ -636,16 +647,47 @@
       content.append(grid);
     }
 
-    async function refresh(silent = false) {
-      if (state.refreshing) return;
+    function hasActiveSelection() {
+      if (state.selectingText) return true;
+      const selection = window.getSelection();
+      return Boolean(
+        selection &&
+        !selection.isCollapsed &&
+        selection.anchorNode &&
+        content.contains(selection.anchorNode)
+      );
+    }
+
+    async function refresh(silent = false, force = false) {
+      if (state.refreshing || (!force && hasActiveSelection())) return;
       state.refreshing = true;
       try {
-        render(await api('/api/projects'));
+        const payload = await api('/api/projects');
+        if (force || !hasActiveSelection()) render(payload);
       } catch (error) {
         if (!silent) showToast(error.message, 'error');
       } finally {
         state.refreshing = false;
       }
+    }
+
+    function openProjectDialog(project, detector, editingId = null) {
+      state.editingId = editingId;
+      form.reset();
+      document.querySelector('#dialog-title').textContent = editingId ? '编辑项目信息' : '确认项目信息';
+      document.querySelector('#dialog-description').textContent = editingId
+        ? '修改后的配置将在下次启动时生效。'
+        : '自动识别完成后，你可以在保存前修正配置。';
+      document.querySelector('#detector').textContent = detector;
+      document.querySelector('#project-path').textContent = project.path;
+      document.querySelector('#path-input').value = project.path;
+      document.querySelector('#name-input').value = project.name;
+      document.querySelector('#type-input').value = project.type;
+      document.querySelector('#command-input').value = project.command;
+      document.querySelector('#port-input').value = project.port;
+      document.querySelector('#save-project').textContent = editingId ? '保存修改' : '保存项目';
+      dialog.showModal();
+      document.querySelector('#name-input').focus();
     }
 
     async function beginAdd() {
@@ -660,16 +702,7 @@
           method: 'POST',
           body: JSON.stringify({ path: picked.path })
         });
-        form.reset();
-        document.querySelector('#detector').textContent = detected.detector;
-        document.querySelector('#project-path').textContent = detected.path;
-        document.querySelector('#path-input').value = detected.path;
-        document.querySelector('#name-input').value = detected.name;
-        document.querySelector('#type-input').value = detected.type;
-        document.querySelector('#command-input').value = detected.command;
-        document.querySelector('#port-input').value = detected.port;
-        dialog.showModal();
-        document.querySelector('#name-input').focus();
+        openProjectDialog(detected, detected.detector);
       } catch (error) {
         showToast(error.message, 'error');
       } finally {
@@ -686,9 +719,10 @@
       button.disabled = true;
       button.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>保存中</span>';
       const data = new FormData(form);
+      const editingId = state.editingId;
       try {
-        await api('/api/projects', {
-          method: 'POST',
+        await api(editingId ? `/api/projects/${editingId}` : '/api/projects', {
+          method: editingId ? 'PUT' : 'POST',
           body: JSON.stringify({
             path: data.get('path'),
             name: data.get('name'),
@@ -698,8 +732,8 @@
           })
         });
         dialog.close();
-        showToast('项目已添加');
-        await refresh(true);
+        showToast(editingId ? '项目配置已更新' : '项目已添加');
+        await refresh(true, true);
       } catch (error) {
         showToast(error.message, 'error');
       } finally {
@@ -717,6 +751,10 @@
       if (!project) return;
       if (action === 'open') {
         window.open(project.url, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      if (action === 'edit') {
+        openProjectDialog(project, '已有配置', project.id);
         return;
       }
       if (action === 'delete' && !window.confirm(`确定删除“${project.name}”吗？`)) return;
@@ -742,7 +780,7 @@
         showToast(error.message, 'error');
       } finally {
         state.actionIds.delete(id);
-        await refresh(true);
+        await refresh(true, true);
       }
     }
 
@@ -752,11 +790,17 @@
       const action = event.target.closest('[data-action]');
       if (action) handleAction(action);
     });
+    content.addEventListener('pointerdown', () => {
+      state.selectingText = true;
+    });
+    window.addEventListener('pointerup', () => {
+      state.selectingText = false;
+    });
     form.addEventListener('submit', saveProject);
     document.querySelector('#close-dialog').addEventListener('click', () => dialog.close());
     document.querySelector('#cancel-dialog').addEventListener('click', () => dialog.close());
-    dialog.addEventListener('click', event => {
-      if (event.target === dialog) dialog.close();
+    dialog.addEventListener('close', () => {
+      state.editingId = null;
     });
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) refresh(true);

@@ -123,6 +123,13 @@ def test_project_api_create_list_conflicts_and_delete(tmp_path: Path, monkeypatc
         }
         assert listing["projects"][0]["status"] == "stopped"
 
+        updated_payload = {**payload, "name": "updated", "command": "new command"}
+        updated = client.put(f"/api/projects/{project_id}", json=updated_payload)
+        assert updated.status_code == 200
+        assert updated.json()["name"] == "updated"
+        assert updated.json()["command"] == "new command"
+        assert client.get("/api/projects").json()["projects"][0]["name"] == "updated"
+
         duplicate_path = client.post("/api/projects", json=payload)
         assert duplicate_path.status_code == 409
         assert duplicate_path.json()["detail"] == "该目录已添加"
@@ -133,6 +140,9 @@ def test_project_api_create_list_conflicts_and_delete(tmp_path: Path, monkeypatc
 
         service = application.state.launcher
         monkeypatch.setattr(service.processes, "is_running", lambda _: True)
+        blocked_update = client.put(f"/api/projects/{project_id}", json=payload)
+        assert blocked_update.status_code == 409
+        assert blocked_update.json()["detail"] == "请先停止项目再编辑"
         blocked_delete = client.delete(f"/api/projects/{project_id}")
         assert blocked_delete.status_code == 409
 
@@ -193,6 +203,10 @@ def test_static_project_start_stop_and_delete(tmp_path: Path) -> None:
         assert started.status_code == 200
         assert started.json()["status"] == "running"
         assert started.json()["pid"] is not None
+        assert (
+            client.put(f"/api/projects/{project_id}", json=payload).status_code
+            == 409
+        )
         assert client.delete(f"/api/projects/{project_id}").status_code == 409
 
         stopped = client.post(f"/api/projects/{project_id}/stop")

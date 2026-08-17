@@ -107,6 +107,15 @@ class ProjectStore:
             self._projects.append(dict(project))
             self._save()
 
+    def update(self, project: dict) -> bool:
+        with self._lock:
+            for index, current in enumerate(self._projects):
+                if current["id"] == project["id"]:
+                    self._projects[index] = dict(project)
+                    self._save()
+                    return True
+        return False
+
     def delete(self, project_id: str) -> bool:
         with self._lock:
             original_size = len(self._projects)
@@ -320,6 +329,29 @@ class LauncherService:
         if self.processes.is_running(project_id):
             raise LauncherError(409, "请先停止项目再删除")
         self.store.delete(project_id)
+
+    def update(self, project_id: str, payload: ProjectCreate) -> dict:
+        with self._lock:
+            self.require_project(project_id)
+            if self.processes.is_running(project_id):
+                raise LauncherError(409, "请先停止项目再编辑")
+            path = canonical_path(payload.path)
+            other_projects = [
+                project
+                for project in self.store.all()
+                if project["id"] != project_id
+            ]
+            self._validate(payload, path, other_projects)
+            project = {
+                "id": project_id,
+                "path": str(path),
+                "name": payload.name.strip(),
+                "type": payload.type,
+                "command": payload.command.strip(),
+                "port": payload.port,
+            }
+            self.store.update(project)
+        return self.view(project)
 
     def start(self, project_id: str) -> dict:
         project = self.require_project(project_id)
@@ -543,6 +575,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @application.post("/api/projects", status_code=201)
     def create_project(payload: ProjectCreate) -> dict:
         return service.create(payload)
+
+    @application.put("/api/projects/{project_id}")
+    def update_project(project_id: str, payload: ProjectCreate) -> dict:
+        return service.update(project_id, payload)
 
     @application.post("/api/projects/{project_id}/start")
     def start_project(project_id: str) -> dict:
