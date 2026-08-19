@@ -490,6 +490,8 @@
     const state = {
       projects: [],
       refreshing: false,
+      loaded: false,
+      hasRunningProjects: false,
       selectingText: false,
       editingId: null,
       actionIds: new Set()
@@ -651,6 +653,8 @@
 
     function render(payload) {
       state.projects = payload.projects;
+      state.loaded = true;
+      state.hasRunningProjects = payload.summary.running > 0;
       document.querySelector('#total-count').textContent = payload.summary.total;
       document.querySelector('#running-count').textContent = payload.summary.running;
       document.querySelector('#memory-uss-total').textContent = formatBytes(payload.summary.total_memory_uss_bytes);
@@ -678,7 +682,10 @@
     }
 
     async function refresh(silent = false, force = false) {
-      if (state.refreshing || (!force && hasActiveSelection())) return;
+      if (
+        state.refreshing ||
+        (!force && state.loaded && (document.hidden || !state.hasRunningProjects || hasActiveSelection()))
+      ) return;
       state.refreshing = true;
       try {
         const payload = await api('/api/projects');
@@ -823,12 +830,12 @@
       state.editingId = null;
     });
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) refresh(true);
+      if (!document.hidden) refresh(true, true);
     });
 
     refresh();
     window.setInterval(() => {
-      if (!document.hidden) refresh(true);
+      if (!document.hidden && state.hasRunningProjects) refresh(true);
     }, 2000);
   </script>
 </body>
