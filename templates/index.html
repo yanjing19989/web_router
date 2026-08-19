@@ -145,7 +145,7 @@
 
     .summary-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 14px;
       margin: 12px 0 38px;
     }
@@ -398,7 +398,11 @@
         </article>
         <article class="summary-card">
           <div class="summary-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 1v4m6-4v4M9 19v4m6-4v4M1 9h4m14 0h4M1 15h4m14 0h4"/></svg></div>
-          <div><div class="summary-label">进程树内存</div><div class="summary-value" id="memory-total">—</div></div>
+          <div><div class="summary-label">专用内存 USS</div><div class="summary-value" id="memory-uss-total">—</div></div>
+        </article>
+        <article class="summary-card">
+          <div class="summary-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/><path d="M7 4v16m5-16v16m5-16v16"/></svg></div>
+          <div><div class="summary-label">虚拟内存 VMS</div><div class="summary-value" id="memory-vms-total">—</div></div>
         </article>
       </section>
 
@@ -607,10 +611,10 @@
       const metrics = document.createElement('dl');
       metrics.className = 'metrics';
       metrics.append(
-        metric('端口', String(project.port)),
         metric('PID', project.pid ? String(project.pid) : '—'),
         metric('CPU', running ? `${project.cpu_percent.toFixed(1)}%` : '—'),
-        metric('内存', running ? formatBytes(project.memory_bytes) : '—')
+        metric('专用内存', running ? formatBytes(project.memory_uss_bytes) : '—'),
+        metric('虚拟内存', running ? formatBytes(project.memory_vms_bytes) : '—')
       );
 
       const details = document.createElement('div');
@@ -650,7 +654,8 @@
       state.projects = payload.projects;
       document.querySelector('#total-count').textContent = payload.summary.total;
       document.querySelector('#running-count').textContent = payload.summary.running;
-      document.querySelector('#memory-total').textContent = formatBytes(payload.summary.total_memory_bytes);
+      document.querySelector('#memory-uss-total').textContent = formatBytes(payload.summary.total_memory_uss_bytes);
+      document.querySelector('#memory-vms-total').textContent = formatBytes(payload.summary.total_memory_vms_bytes);
       content.replaceChildren();
       if (!payload.projects.length) {
         content.append(document.querySelector('#empty-template').content.cloneNode(true));
@@ -779,7 +784,8 @@
         summary: {
           total: state.projects.length,
           running: state.projects.filter(item => item.status === 'running').length,
-          total_memory_bytes: state.projects.reduce((sum, item) => sum + item.memory_bytes, 0)
+          total_memory_uss_bytes: state.projects.reduce((sum, item) => sum + item.memory_uss_bytes, 0),
+          total_memory_vms_bytes: state.projects.reduce((sum, item) => sum + item.memory_vms_bytes, 0)
         },
         projects: state.projects
       });

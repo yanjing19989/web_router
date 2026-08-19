@@ -119,7 +119,8 @@ def test_project_api_create_list_conflicts_and_delete(tmp_path: Path, monkeypatc
         assert listing["summary"] == {
             "total": 1,
             "running": 0,
-            "total_memory_bytes": 0,
+            "total_memory_uss_bytes": 0,
+            "total_memory_vms_bytes": 0,
         }
         assert listing["projects"][0]["status"] == "stopped"
 

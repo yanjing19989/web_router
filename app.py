@@ -215,7 +215,8 @@ class ProcessManager:
             "status": "stopped",
             "pid": None,
             "cpu_percent": 0.0,
-            "memory_bytes": 0,
+            "memory_uss_bytes": 0,
+            "memory_vms_bytes": 0,
             "uptime_seconds": 0,
         }
         with self._lock:
@@ -233,14 +234,17 @@ class ProcessManager:
                 return stopped
 
             cpu_percent = 0.0
-            memory_bytes = 0
+            memory_uss_bytes = 0
+            memory_vms_bytes = 0
             live_pids: set[int] = set()
             for process in processes:
                 try:
                     live_pids.add(process.pid)
                     sampled = runtime.cpu_processes.setdefault(process.pid, process)
                     cpu_percent += sampled.cpu_percent(interval=None)
-                    memory_bytes += sampled.memory_info().rss
+                    memory = sampled.memory_full_info()
+                    memory_uss_bytes += getattr(memory, "uss", 0)
+                    memory_vms_bytes += memory.vms
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
             runtime.cpu_processes = {
@@ -252,7 +256,8 @@ class ProcessManager:
                 "status": "running",
                 "pid": runtime.process.pid,
                 "cpu_percent": round(cpu_percent, 1),
-                "memory_bytes": memory_bytes,
+                "memory_uss_bytes": memory_uss_bytes,
+                "memory_vms_bytes": memory_vms_bytes,
                 "uptime_seconds": int(time.monotonic() - runtime.started_at),
             }
 
@@ -379,7 +384,12 @@ class LauncherService:
             "summary": {
                 "total": len(projects),
                 "running": sum(item["status"] == "running" for item in projects),
-                "total_memory_bytes": sum(item["memory_bytes"] for item in projects),
+                "total_memory_uss_bytes": sum(
+                    item["memory_uss_bytes"] for item in projects
+                ),
+                "total_memory_vms_bytes": sum(
+                    item["memory_vms_bytes"] for item in projects
+                ),
             },
             "projects": projects,
         }
