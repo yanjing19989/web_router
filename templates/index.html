@@ -94,6 +94,12 @@
       gap: 24px;
     }
 
+    .topbar > .summary-grid {
+      flex: 1 1 auto;
+      min-width: 0;
+      justify-content: center;
+    }
+
     .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
 
     .brand-mark {
@@ -144,28 +150,24 @@
     .button-ghost:hover:not(:disabled) { border-color: transparent; background: var(--surface-muted); }
 
     .summary-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 14px;
-      margin: 12px 0 38px;
+      display: flex;
+      align-items: center;
+      gap: clamp(12px, 2vw, 28px);
+      margin: 0;
     }
 
     .summary-card {
-      min-height: 114px;
-      padding: 22px;
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-lg);
-      box-shadow: var(--shadow);
+      min-width: 0;
+      padding: 8px 0;
       display: flex;
       align-items: center;
-      gap: 17px;
+      gap: 10px;
     }
 
     .summary-icon {
-      width: 45px;
-      height: 45px;
-      border-radius: 13px;
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
       display: grid;
       place-items: center;
       background: var(--surface-muted);
@@ -174,9 +176,9 @@
     }
 
     .summary-icon.live { color: var(--success); background: var(--success-soft); }
-    .summary-icon svg { width: 21px; height: 21px; }
-    .summary-label { color: var(--text-secondary); font-size: 13px; margin-bottom: 5px; }
-    .summary-value { font-size: 26px; line-height: 1; font-weight: 700; letter-spacing: -.035em; }
+    .summary-icon svg { width: 17px; height: 17px; }
+    .summary-label { color: var(--text-secondary); font-size: 11px; margin-bottom: 4px; white-space: nowrap; }
+    .summary-value { font-size: 18px; line-height: 1; font-weight: 700; letter-spacing: -.035em; white-space: nowrap; }
 
     .section-heading {
       display: flex;
@@ -346,12 +348,10 @@
 
     @media (max-width: 720px) {
       .shell { padding: 0 16px 36px; }
-      .topbar { min-height: 82px; }
+      .topbar { min-height: 82px; flex-wrap: wrap; gap: 12px 16px; padding: 16px 0 12px; }
       .brand p { display: none; }
-      .summary-grid { grid-template-columns: 1fr; gap: 10px; margin-bottom: 30px; }
-      .summary-card { min-height: 82px; padding: 16px 18px; }
-      .summary-icon { width: 39px; height: 39px; }
-      .summary-value { font-size: 22px; }
+      .topbar > .summary-grid { order: 3; flex: 1 0 100%; justify-content: space-between; gap: 10px; overflow-x: auto; }
+      .summary-card { padding: 4px 0; }
       .section-heading { align-items: start; }
       .refresh-note { display: none; }
       .project-card { padding: 17px; }
@@ -375,18 +375,11 @@
         <div class="brand-mark" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h3l2 2h6A2.5 2.5 0 0 1 20 9.5v7A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-9Z"/><path d="m10 11 4 2-4 2v-4Z"/></svg>
         </div>
-        <div class="brand-copy">
+      <div class="brand-copy">
           <h1>本地项目启动器</h1>
           <p>统一管理这台电脑上的开发项目</p>
         </div>
       </div>
-      <button class="button button-primary" id="add-project" type="button">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-        <span>添加项目</span>
-      </button>
-    </header>
-
-    <main>
       <section class="summary-grid" aria-label="项目概览">
         <article class="summary-card">
           <div class="summary-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 9h8M8 13h5"/></svg></div>
@@ -405,7 +398,13 @@
           <div><div class="summary-label">虚拟内存 VMS</div><div class="summary-value" id="memory-vms-total">—</div></div>
         </article>
       </section>
+      <button class="button button-primary" id="add-project" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        <span>添加项目</span>
+      </button>
+    </header>
 
+    <main>
       <section aria-labelledby="projects-title">
         <div class="section-heading">
           <div><h2 id="projects-title">我的项目</h2><p>所有运行状态仅保留在本次启动期间</p></div>
