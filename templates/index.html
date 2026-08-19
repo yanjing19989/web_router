@@ -209,10 +209,10 @@
     .project-card:hover { border-color: var(--line-strong); }
     .project-card.running { border-color: color-mix(in srgb, var(--success) 34%, var(--line)); }
 
-    .project-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-    .project-title { min-width: 0; }
-    .project-title h3 { margin: 0; font-size: 16px; line-height: 1.35; overflow-wrap: anywhere; }
-    .type-line { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+    .project-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+    .project-title { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; gap: 9px; }
+    .project-title h3 { min-width: 0; margin: 0; font-size: 16px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .type-line { display: flex; align-items: center; gap: 7px; margin: 0; flex: 0 0 auto; }
 
     .type-badge {
       border-radius: 6px;
@@ -223,6 +223,17 @@
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: .04em;
+    }
+
+    .port-badge {
+      border-radius: 6px;
+      padding: 3px 7px;
+      color: var(--accent);
+      background: var(--accent-soft);
+      font-size: 11px;
+      font-weight: 750;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: .02em;
     }
 
     .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; white-space: nowrap; }
@@ -582,7 +593,11 @@
       const type = document.createElement('span');
       type.className = 'type-badge';
       type.textContent = project.type;
-      typeLine.append(type);
+      const port = document.createElement('span');
+      port.className = 'port-badge';
+      port.textContent = `:${project.port}`;
+      port.title = `端口 ${project.port}`;
+      typeLine.append(type, port);
       title.append(h3, typeLine);
       const status = document.createElement('span');
       status.className = `status ${project.status}`;
