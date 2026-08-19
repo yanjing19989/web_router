@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATE_FILE = BASE_DIR / "templates" / "index.html"
+STATIC_DIR = BASE_DIR / "static"
 HOST = "127.0.0.1"
 APP_PORT = 8765
 MIN_PROJECT_PORT = 3000
@@ -570,6 +571,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             headers={"Cache-Control": "no-cache"},
         )
 
+    @application.get("/static/{asset_path:path}", include_in_schema=False)
+    def static_asset(asset_path: str) -> FileResponse:
+        asset = (STATIC_DIR / asset_path).resolve()
+        if STATIC_DIR not in asset.parents or not asset.is_file():
+            raise LauncherError(404, "资源不存在")
+        return FileResponse(asset)
+
     @application.get("/api/projects")
     def list_projects() -> dict:
         return service.list_view()
@@ -610,4 +618,12 @@ app = create_app()
 
 
 if __name__ == "__main__":
+    import threading
+    import webbrowser
+
+    def open_browser() -> None:
+        time.sleep(1.2)
+        webbrowser.open(f"http://{HOST}:{APP_PORT}/")
+
+    threading.Thread(target=open_browser, daemon=True).start()
     uvicorn.run(app, host=HOST, port=APP_PORT, reload=False)
