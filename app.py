@@ -440,6 +440,26 @@ def python_executable(path: Path) -> Path:
     return Path(sys.executable)
 
 
+def python_module_entries(path: Path) -> list[tuple[str, Path]]:
+    """Return importable top-level packages exposing a ``__main__.py`` entry."""
+    entries: list[tuple[str, Path]] = []
+    try:
+        children = sorted(path.iterdir(), key=lambda item: item.name.casefold())
+    except OSError:
+        return entries
+    for package in children:
+        if (
+            not package.is_dir()
+            or package.name.startswith(".")
+            or not package.name.isidentifier()
+        ):
+            continue
+        main_file = package / "__main__.py"
+        if main_file.is_file():
+            entries.append((package.name, main_file))
+    return entries
+
+
 def detect_project(path: Path) -> dict | None:
     package_file = path / "package.json"
     if package_file.is_file():
@@ -492,7 +512,26 @@ def detect_project(path: Path) -> dict | None:
             "detector": "Django",
         }
 
-    candidates = [candidate for candidate in (path / "main.py", path / "app.py") if candidate.is_file()]
+    module_entries = python_module_entries(path)
+    if module_entries:
+        module, main_file = module_entries[0]
+        source = read_source(main_file)
+        detector = (
+            "FastAPI"
+            if re.search(r"\b(?:FastAPI|uvicorn)\b", source, re.IGNORECASE)
+            else f"Python · {module}"
+        )
+        return {
+            "type": "python",
+            "command": f"{interpreter} -m {module} --host {HOST} --port {{port}}",
+            "detector": detector,
+        }
+
+    candidates = [
+        candidate
+        for candidate in (path / "main.py", path / "app.py")
+        if candidate.is_file()
+    ]
     for candidate in candidates:
         source = read_source(candidate)
         module = candidate.stem
@@ -517,7 +556,9 @@ def detect_project(path: Path) -> dict | None:
         candidate = candidates[0]
         return {
             "type": "python",
-            "command": f"{interpreter} {candidate.name}",
+            "command": (
+                f"{interpreter} {candidate.name} --host {HOST} --port {{port}}"
+            ),
             "detector": f"Python · {candidate.name}",
         }
 
