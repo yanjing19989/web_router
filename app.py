@@ -577,6 +577,14 @@ def select_folder() -> str | None:
         from tkinter import filedialog
     except ImportError as exc:
         raise LauncherError(500, "当前 Python 环境不支持 Windows 文件夹选择器") from exc
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
     root = tk.Tk()
     try:
