@@ -597,6 +597,21 @@ def select_folder() -> str | None:
         root.destroy()
 
 
+def open_project_directory(path: str | Path) -> None:
+    directory = canonical_path(path)
+    if not directory.is_dir():
+        raise LauncherError(422, "项目目录无效")
+    try:
+        if os.name == "nt":
+            os.startfile(str(directory))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(directory)])
+        else:
+            subprocess.Popen(["xdg-open", str(directory)])
+    except OSError as exc:
+        raise LauncherError(500, f"无法打开项目目录：{exc}") from exc
+
+
 def create_app(data_dir: Path | None = None) -> FastAPI:
     service = LauncherService(data_dir or BASE_DIR / ".local_data")
 
@@ -654,6 +669,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @application.post("/api/projects/{project_id}/stop")
     def stop_project(project_id: str) -> dict:
         return service.stop(project_id)
+
+    @application.post("/api/projects/{project_id}/open-folder", status_code=204)
+    def open_project_folder(project_id: str) -> Response:
+        project = service.require_project(project_id)
+        open_project_directory(project["path"])
+        return Response(status_code=204)
 
     @application.delete("/api/projects/{project_id}", status_code=204)
     def delete_project(project_id: str) -> Response:

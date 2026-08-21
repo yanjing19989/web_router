@@ -47,7 +47,13 @@
     <main>
       <section aria-labelledby="projects-title">
         <div class="section-heading">
-          <div><h2 id="projects-title">我的项目</h2><p>所有运行状态仅保留在本次启动期间</p></div>
+          <div class="section-title"><h2 id="projects-title">我的项目</h2><p>所有运行状态仅保留在本次启动期间</p></div>
+          <div class="project-filters" id="project-filters" role="group" aria-label="项目类别过滤">
+            <button type="button" class="filter-option active" data-filter="all" aria-pressed="true">全部</button>
+            <button type="button" class="filter-option active" data-filter="npm" aria-pressed="true">npm</button>
+            <button type="button" class="filter-option active" data-filter="python" aria-pressed="true">Python</button>
+            <button type="button" class="filter-option active" data-filter="static" aria-pressed="true">静态</button>
+          </div>
           <span class="refresh-note">运行指标每 2 秒刷新</span>
         </div>
         <div id="project-content">

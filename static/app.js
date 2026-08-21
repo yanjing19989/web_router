@@ -2,6 +2,7 @@
       play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 5v14l11-7L8 5Z"/></svg>',
       stop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>',
       open: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 4h6v6m0-6-9 9"/><path d="M19 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg>',
+      folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 9h18"/></svg>',
       edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m14 5 5 5M4 20l3.5-.7L19 7.8a2.1 2.1 0 0 0-3-3L4.7 16.3 4 20Z"/></svg>',
       trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg>'
     };
@@ -13,7 +14,8 @@
       hasRunningProjects: false,
       selectingText: false,
       editingId: null,
-      actionIds: new Set()
+      actionIds: new Set(),
+      filterTypes: new Set(['npm', 'python', 'static'])
     };
     const content = document.querySelector('#project-content');
     const dialog = document.querySelector('#project-dialog');
@@ -150,8 +152,12 @@
       actions.className = 'project-actions';
       const primary = actionButton(running ? '停止' : '启动', running ? 'stop' : 'start', running ? icons.stop : icons.play, running ? '' : 'button-primary');
       const open = actionButton('打开', 'open', icons.open);
+      const folder = actionButton('打开目录', 'open-folder', icons.folder, 'icon-only');
       const edit = actionButton('编辑', 'edit', icons.edit, 'icon-only');
       const remove = actionButton('删除', 'delete', icons.trash, 'button-danger icon-only');
+      folder.querySelector('span').remove();
+      folder.setAttribute('aria-label', '打开所在目录');
+      folder.title = '打开所在目录';
       edit.querySelector('span').remove();
       edit.setAttribute('aria-label', '编辑项目');
       edit.title = running ? '请先停止项目再编辑' : '编辑项目';
@@ -165,7 +171,7 @@
         primary.disabled = true;
         primary.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>处理中</span>';
       }
-      actions.append(primary, open, edit, remove);
+      actions.append(primary, open, folder, edit, remove);
       card.append(head, metrics, details, actions);
       return card;
     }
@@ -179,14 +185,56 @@
       document.querySelector('#memory-uss-total').textContent = formatBytes(payload.summary.total_memory_uss_bytes);
       document.querySelector('#memory-vms-total').textContent = formatBytes(payload.summary.total_memory_vms_bytes);
       content.replaceChildren();
-      if (!payload.projects.length) {
+      const visibleProjects = payload.projects.filter(project => state.filterTypes.has(project.type));
+      if (!visibleProjects.length) {
+        if (payload.projects.length) {
+          const empty = document.createElement('div');
+          empty.className = 'empty';
+          const message = document.createElement('p');
+          message.textContent = '当前筛选类别暂无项目';
+          empty.append(message);
+          content.append(empty);
+          return;
+        }
         content.append(document.querySelector('#empty-template').content.cloneNode(true));
         return;
       }
       const grid = document.createElement('div');
       grid.className = 'project-grid';
-      payload.projects.forEach(project => grid.append(renderCard(project)));
+      visibleProjects.forEach(project => grid.append(renderCard(project)));
       content.append(grid);
+    }
+
+    function updateProjectFilters() {
+      const allSelected = state.filterTypes.size === 3;
+      document.querySelectorAll('#project-filters [data-filter]').forEach(button => {
+        const type = button.dataset.filter;
+        const selected = type === 'all' ? allSelected : state.filterTypes.has(type);
+        button.classList.toggle('active', selected);
+        button.setAttribute('aria-pressed', String(selected));
+      });
+    }
+
+    function handleFilter(button) {
+      const type = button.dataset.filter;
+      if (type === 'all') {
+        state.filterTypes = new Set(['npm', 'python', 'static']);
+      } else if (state.filterTypes.has(type)) {
+        if (state.filterTypes.size === 1) return;
+        state.filterTypes.delete(type);
+      } else {
+        state.filterTypes.add(type);
+      }
+      updateProjectFilters();
+      render({
+        summary: {
+          total: state.projects.length,
+          running: state.projects.filter(item => item.status === 'running').length,
+          total_memory_uss_bytes: state.projects.reduce((sum, item) => sum + item.memory_uss_bytes, 0),
+          total_memory_vms_bytes: state.projects.reduce((sum, item) => sum + item.memory_vms_bytes, 0)
+        },
+        projects: state.projects
+      });
     }
 
     function hasActiveSelection() {
@@ -298,6 +346,15 @@
         window.open(project.url, '_blank', 'noopener,noreferrer');
         return;
       }
+      if (action === 'open-folder') {
+        try {
+          await api(`/api/projects/${id}/open-folder`, { method: 'POST' });
+          showToast('已打开项目目录');
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+        return;
+      }
       if (action === 'edit') {
         openProjectDialog(project, '已有配置', project.id);
         return;
@@ -331,6 +388,10 @@
     }
 
     addButton.addEventListener('click', beginAdd);
+    document.querySelector('#project-filters').addEventListener('click', event => {
+      const button = event.target.closest('[data-filter]');
+      if (button) handleFilter(button);
+    });
     content.addEventListener('click', event => {
       if (event.target.closest('.empty-add')) beginAdd();
       const action = event.target.closest('[data-action]');
