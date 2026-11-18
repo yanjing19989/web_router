@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ctypes
 import os
+import queue
+import threading
 from typing import Callable
 
 if os.name == "nt":
@@ -25,6 +27,14 @@ if os.name == "nt":
     WM_COMMAND = 0x0111
     WM_USER = 0x0400
     WM_TRAYICON = WM_USER + 1
+    WM_PICK_FOLDER = WM_USER + 2
+    WS_POPUP = 0x80000000
+    WS_VISIBLE = 0x10000000
+    WS_EX_TOOLWINDOW = 0x00000080
+    WS_EX_LAYERED = 0x00080000
+    LWA_ALPHA = 0x00000002
+    SM_CXSCREEN = 0
+    SM_CYSCREEN = 1
     WM_LBUTTONUP = 0x0202
     WM_LBUTTONDBLCLK = 0x0203
     WM_RBUTTONUP = 0x0205
@@ -230,6 +240,21 @@ if os.name == "nt":
     gdi32.CreateBitmap.restype = wintypes.HBITMAP
     gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
 
+    user32.GetForegroundWindow.argtypes = []
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+    user32.AttachThreadInput.restype = wintypes.BOOL
+    user32.BringWindowToTop.argtypes = [wintypes.HWND]
+    user32.BringWindowToTop.restype = wintypes.BOOL
+    user32.SetLayeredWindowAttributes.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_ubyte, wintypes.DWORD]
+    user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
+    user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+    user32.GetSystemMetrics.restype = ctypes.c_int
+    kernel32.GetCurrentThreadId.argtypes = []
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
 
 def enable_dpi_awareness() -> None:
     if os.name != "nt":
@@ -253,12 +278,41 @@ def _com_method(obj: ctypes.c_void_p, index: int, restype, *argtypes):
     return fn_type(vtable[index])
 
 
+def _create_foreground_owner() -> wintypes.HWND | None:
+    hinst = kernel32.GetModuleHandleW(None)
+    cx = max(100, user32.GetSystemMetrics(SM_CXSCREEN) // 2)
+    cy = max(100, user32.GetSystemMetrics(SM_CYSCREEN) // 2)
+    owner = user32.CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+        "STATIC",
+        "",
+        WS_POPUP | WS_VISIBLE,
+        cx, cy, 1, 1,
+        None, None, hinst, None,
+    )
+    if not owner:
+        return None
+    user32.SetLayeredWindowAttributes(owner, 0, 0, LWA_ALPHA)
+    fg = user32.GetForegroundWindow()
+    cur_tid = kernel32.GetCurrentThreadId()
+    fg_tid = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+    attached = bool(fg_tid and fg_tid != cur_tid and user32.AttachThreadInput(cur_tid, fg_tid, True))
+    try:
+        user32.SetForegroundWindow(owner)
+        user32.BringWindowToTop(owner)
+    finally:
+        if attached:
+            user32.AttachThreadInput(cur_tid, fg_tid, False)
+    return owner
+
+
 def _select_folder_ifileopendialog(title: str) -> str | None:
     hr = ole32.CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
     initialized = hr in (0, 1)  # S_OK or S_FALSE
     dialog = ctypes.c_void_p()
     item = ctypes.c_void_p()
     path_ptr = wintypes.LPWSTR()
+    owner = _create_foreground_owner()
     try:
         res = ole32.CoCreateInstance(
             ctypes.byref(CLSID_FileOpenDialog),
@@ -281,7 +335,7 @@ def _select_folder_ifileopendialog(title: str) -> str | None:
         set_options(dialog, options.value | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST)
         set_title(dialog, title)
 
-        show_hr = show(dialog, None)
+        show_hr = show(dialog, owner)
         if show_hr == HRESULT_CANCELLED:
             return None
         if show_hr != 0:
@@ -295,6 +349,8 @@ def _select_folder_ifileopendialog(title: str) -> str | None:
             return path_ptr.value
         return None
     finally:
+        if owner:
+            user32.DestroyWindow(owner)
         if path_ptr:
             ole32.CoTaskMemFree(path_ptr)
         if item:
@@ -306,31 +362,57 @@ def _select_folder_ifileopendialog(title: str) -> str | None:
 
 
 def _select_folder_shbrowse(title: str) -> str | None:
+    owner = _create_foreground_owner()
     display_name = ctypes.create_unicode_buffer(260)
     bi = BROWSEINFOW()
+    bi.hwndOwner = owner
     bi.lpszTitle = title
     bi.pszDisplayName = ctypes.cast(display_name, wintypes.LPWSTR)
     bi.ulFlags = 0x00000041  # BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE
-    pidl = shell32.SHBrowseForFolderW(ctypes.byref(bi))
-    if not pidl:
-        return None
     try:
-        out = ctypes.create_unicode_buffer(32768)
-        if shell32.SHGetPathFromIDListW(pidl, out):
-            return out.value or None
-        return None
+        pidl = shell32.SHBrowseForFolderW(ctypes.byref(bi))
+        if not pidl:
+            return None
+        try:
+            out = ctypes.create_unicode_buffer(32768)
+            if shell32.SHGetPathFromIDListW(pidl, out):
+                return out.value or None
+            return None
+        finally:
+            ole32.CoTaskMemFree(pidl)
     finally:
-        ole32.CoTaskMemFree(pidl)
+        if owner:
+            user32.DestroyWindow(owner)
+
+
+_TRAY_HWND_LOCK = threading.Lock()
+_ACTIVE_TRAY_HWND: wintypes.HWND | None = None
+_TRAY_PICK_REQUESTS: queue.Queue[tuple[str, threading.Event, dict[str, object]]] = queue.Queue()
+
+
+def _select_folder_on_current_thread(title: str) -> str | None:
+    try:
+        return _select_folder_ifileopendialog(title)
+    except Exception:
+        return _select_folder_shbrowse(title)
 
 
 def select_folder_native(title: str = "选择项目文件夹") -> str | None:
     if os.name != "nt":
         raise RuntimeError("当前系统不支持 Win32 原生文件夹选择器")
     enable_dpi_awareness()
-    try:
-        return _select_folder_ifileopendialog(title)
-    except Exception:
-        return _select_folder_shbrowse(title)
+    with _TRAY_HWND_LOCK:
+        tray_hwnd = _ACTIVE_TRAY_HWND
+    if tray_hwnd:
+        done = threading.Event()
+        box: dict[str, object] = {}
+        _TRAY_PICK_REQUESTS.put((title, done, box))
+        if user32.PostMessageW(tray_hwnd, WM_PICK_FOLDER, 0, 0):
+            done.wait()
+            if "error" in box:
+                raise box["error"]  # type: ignore[misc]
+            return box.get("path")  # type: ignore[return-value]
+    return _select_folder_on_current_thread(title)
 
 
 def _create_brand_icon() -> wintypes.HICON:
@@ -462,6 +544,19 @@ class TrayManager:
             user32.DestroyMenu(menu)
 
     def _wnd_proc(self, hwnd, msg, wparam, lparam):
+        if msg == WM_PICK_FOLDER:
+            while True:
+                try:
+                    title, done, box = _TRAY_PICK_REQUESTS.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    box["path"] = _select_folder_on_current_thread(title)
+                except Exception as exc:
+                    box["error"] = exc
+                finally:
+                    done.set()
+            return 0
         if msg == self._taskbar_created_msg and self._taskbar_created_msg:
             self._add_notify_icon()
             return 0
@@ -483,6 +578,9 @@ class TrayManager:
     def run(self) -> None:
         if os.name != "nt":
             return
+        global _ACTIVE_TRAY_HWND
+        hr = ole32.CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
+        com_initialized = hr in (0, 1)
         enable_dpi_awareness()
         hinst = kernel32.GetModuleHandleW(None)
         class_name = "WebRouterTrayWindow"
@@ -500,17 +598,25 @@ class TrayManager:
             0, 0, 0, 0,
             None, None, hinst, None,
         )
+        with _TRAY_HWND_LOCK:
+            _ACTIVE_TRAY_HWND = self.hwnd
         self._add_notify_icon()
 
-        msg = wintypes.MSG()
-        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-            user32.TranslateMessage(ctypes.byref(msg))
-            user32.DispatchMessageW(ctypes.byref(msg))
-
-        if self._hicon:
-            user32.DestroyIcon(self._hicon)
-            self._hicon = None
-        self.hwnd = None
+        try:
+            msg = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+        finally:
+            with _TRAY_HWND_LOCK:
+                if _ACTIVE_TRAY_HWND == self.hwnd:
+                    _ACTIVE_TRAY_HWND = None
+            if self._hicon:
+                user32.DestroyIcon(self._hicon)
+                self._hicon = None
+            self.hwnd = None
+            if com_initialized:
+                ole32.CoUninitialize()
 
     def stop(self) -> None:
         if self.hwnd:
