@@ -1,11 +1,64 @@
+import http.client
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import app as launcher
+
+
+class LiveResponse:
+    def __init__(self, status: int, body: bytes) -> None:
+        self.status_code = status
+        self._body = body
+
+    def json(self):
+        return json.loads(self._body.decode("utf-8"))
+
+
+class LiveClient:
+    def __init__(self, data_dir: Path) -> None:
+        self.server = launcher.create_server(data_dir=data_dir, port=0)
+        self.port = self.server.server_address[1]
+        self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def __enter__(self) -> "LiveClient":
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.server.service.processes.stop_all()
+        self._thread.join(timeout=2)
+
+    def request(self, method: str, path: str, json_body=None) -> LiveResponse:
+        conn = http.client.HTTPConnection(launcher.HOST, self.port, timeout=5)
+        try:
+            headers = {}
+            body = None
+            if json_body is not None:
+                body = json.dumps(json_body).encode("utf-8")
+                headers["Content-Type"] = "application/json"
+            conn.request(method, path, body=body, headers=headers)
+            resp = conn.getresponse()
+            return LiveResponse(resp.status, resp.read())
+        finally:
+            conn.close()
+
+    def get(self, path: str) -> LiveResponse:
+        return self.request("GET", path)
+
+    def post(self, path: str, json=None) -> LiveResponse:
+        return self.request("POST", path, json_body=json)
+
+    def put(self, path: str, json=None) -> LiveResponse:
+        return self.request("PUT", path, json_body=json)
+
+    def delete(self, path: str) -> LiveResponse:
+        return self.request("DELETE", path)
 
 
 @pytest.mark.parametrize(
@@ -102,9 +155,8 @@ def test_project_api_create_list_conflicts_and_delete(tmp_path: Path, monkeypatc
     other_dir = tmp_path / "other"
     other_dir.mkdir()
     monkeypatch.setattr(launcher, "port_is_available", lambda _: True)
-    application = launcher.create_app(tmp_path / "data")
 
-    with TestClient(application) as client:
+    with LiveClient(tmp_path / "data") as client:
         inspected = client.post("/api/projects/inspect", json={"path": str(project_dir)})
         assert inspected.status_code == 200
         payload = {
@@ -139,7 +191,7 @@ def test_project_api_create_list_conflicts_and_delete(tmp_path: Path, monkeypatc
         duplicate_port = client.post("/api/projects", json=duplicate_port_payload)
         assert duplicate_port.status_code == 409
 
-        service = application.state.launcher
+        service = client.server.service
         monkeypatch.setattr(service.processes, "is_running", lambda _: True)
         blocked_update = client.put(f"/api/projects/{project_id}", json=payload)
         assert blocked_update.status_code == 409
@@ -155,7 +207,6 @@ def test_project_api_create_list_conflicts_and_delete(tmp_path: Path, monkeypatc
 def test_project_validation_errors(tmp_path: Path, monkeypatch) -> None:
     project_dir = tmp_path / "project"
     project_dir.mkdir()
-    application = launcher.create_app(tmp_path / "data")
     base = {
         "path": str(project_dir),
         "name": "project",
@@ -164,7 +215,7 @@ def test_project_validation_errors(tmp_path: Path, monkeypatch) -> None:
         "port": 3000,
     }
 
-    with TestClient(application) as client:
+    with LiveClient(tmp_path / "data") as client:
         invalid_directory = client.post(
             "/api/projects", json={**base, "path": str(tmp_path / "missing")}
         )
@@ -187,9 +238,8 @@ def test_static_project_start_stop_and_delete(tmp_path: Path) -> None:
     project_dir = tmp_path / "running-site"
     project_dir.mkdir()
     (project_dir / "index.html").write_text("running", encoding="utf-8")
-    application = launcher.create_app(tmp_path / "data")
 
-    with TestClient(application) as client:
+    with LiveClient(tmp_path / "data") as client:
         inspected = client.post(
             "/api/projects/inspect", json={"path": str(project_dir)}
         ).json()
@@ -221,7 +271,6 @@ def test_duplicate_paths_are_case_insensitive(tmp_path: Path, monkeypatch) -> No
     project_dir = tmp_path / "CaseProject"
     project_dir.mkdir()
     monkeypatch.setattr(launcher, "port_is_available", lambda _: True)
-    application = launcher.create_app(tmp_path / "data")
     payload = {
         "path": str(project_dir),
         "name": "first",
@@ -230,7 +279,7 @@ def test_duplicate_paths_are_case_insensitive(tmp_path: Path, monkeypatch) -> No
         "port": 3000,
     }
 
-    with TestClient(application) as client:
+    with LiveClient(tmp_path / "data") as client:
         assert client.post("/api/projects", json=payload).status_code == 201
         duplicate = client.post(
             "/api/projects",

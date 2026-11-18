@@ -1,33 +1,40 @@
 from __future__ import annotations
 
-import asyncio
+import argparse
 import json
+import mimetypes
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
-from contextlib import asynccontextmanager
+import webbrowser
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Literal
+from typing import Any
 
-import psutil
-import uvicorn
-from fastapi import FastAPI, Response
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+try:
+    import psutil
+except ImportError:  # pragma: no cover - fallback when psutil is unavailable
+    psutil = None  # type: ignore[assignment]
+
+from win32_ui import TrayManager, select_folder_native
 
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATE_FILE = BASE_DIR / "templates" / "index.html"
 STATIC_DIR = BASE_DIR / "static"
 HOST = "127.0.0.1"
-APP_PORT = 8765
+APP_PORT = 8888
 MIN_PROJECT_PORT = 3000
 MAX_PROJECT_PORT = 8999
+VALID_PROJECT_TYPES = {"npm", "python", "static"}
 
 
 class LauncherError(Exception):
@@ -35,18 +42,6 @@ class LauncherError(Exception):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
-
-
-class InspectRequest(BaseModel):
-    path: str
-
-
-class ProjectCreate(BaseModel):
-    path: str
-    name: str
-    type: Literal["npm", "python", "static"]
-    command: str
-    port: int
 
 
 def canonical_path(value: str | Path) -> Path:
@@ -72,6 +67,42 @@ def port_is_available(port: int) -> bool:
         return False
     finally:
         sock.close()
+
+
+def validate_inspect_payload(data: Any) -> str:
+    if not isinstance(data, dict) or not isinstance(data.get("path"), str):
+        raise LauncherError(422, "请求参数无效：缺少 path")
+    return data["path"]
+
+
+def validate_project_payload(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise LauncherError(422, "请求体必须是 JSON 对象")
+
+    path = data.get("path")
+    name = data.get("name")
+    project_type = data.get("type")
+    command = data.get("command")
+    port = data.get("port")
+
+    if not isinstance(path, str):
+        raise LauncherError(422, "项目路径无效")
+    if not isinstance(name, str):
+        raise LauncherError(422, "项目名称不能为空")
+    if project_type not in VALID_PROJECT_TYPES:
+        raise LauncherError(422, "项目类型无效")
+    if not isinstance(command, str):
+        raise LauncherError(422, "启动命令不能为空")
+    if isinstance(port, bool) or not isinstance(port, int):
+        raise LauncherError(422, "端口必须是整数")
+
+    return {
+        "path": path,
+        "name": name,
+        "type": project_type,
+        "command": command,
+        "port": port,
+    }
 
 
 class ProjectStore:
@@ -140,7 +171,7 @@ class RuntimeProcess:
     def __init__(self, process: subprocess.Popen) -> None:
         self.process = process
         self.started_at = time.monotonic()
-        self.cpu_processes: dict[int, psutil.Process] = {}
+        self.cpu_processes: dict[int, Any] = {}
 
 
 class ProcessManager:
@@ -157,6 +188,15 @@ class ProcessManager:
                 return True
             self._runtimes.pop(project_id, None)
             return False
+
+    def running_count(self) -> int:
+        with self._lock:
+            dead = [
+                pid for pid, rt in self._runtimes.items() if rt.process.poll() is not None
+            ]
+            for pid in dead:
+                self._runtimes.pop(pid, None)
+            return len(self._runtimes)
 
     def start(self, project: dict) -> None:
         project_id = project["id"]
@@ -228,6 +268,16 @@ class ProcessManager:
                 self._runtimes.pop(project_id, None)
                 return stopped
 
+            if psutil is None:
+                return {
+                    "status": "running",
+                    "pid": runtime.process.pid,
+                    "cpu_percent": 0.0,
+                    "memory_uss_bytes": 0,
+                    "memory_vms_bytes": 0,
+                    "uptime_seconds": int(time.monotonic() - runtime.started_at),
+                }
+
             try:
                 root = psutil.Process(runtime.process.pid)
                 processes = [root, *root.children(recursive=True)]
@@ -264,6 +314,17 @@ class ProcessManager:
 
     @staticmethod
     def _terminate(runtime: RuntimeProcess) -> None:
+        if psutil is None:
+            try:
+                runtime.process.terminate()
+                runtime.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                runtime.process.kill()
+                runtime.process.wait(timeout=2)
+            except OSError:
+                pass
+            return
+
         try:
             root = psutil.Process(runtime.process.pid)
             processes = [*reversed(root.children(recursive=True)), root]
@@ -314,18 +375,18 @@ class LauncherService:
             **detection,
         }
 
-    def create(self, payload: ProjectCreate) -> dict:
+    def create(self, payload: dict[str, Any]) -> dict:
         with self._lock:
-            path = canonical_path(payload.path)
+            path = canonical_path(payload["path"])
             projects = self.store.all()
             self._validate(payload, path, projects)
             project = {
                 "id": uuid.uuid4().hex,
                 "path": str(path),
-                "name": payload.name.strip(),
-                "type": payload.type,
-                "command": payload.command.strip(),
-                "port": payload.port,
+                "name": payload["name"].strip(),
+                "type": payload["type"],
+                "command": payload["command"].strip(),
+                "port": payload["port"],
             }
             self.store.add(project)
         return self.view(project)
@@ -336,12 +397,12 @@ class LauncherService:
             raise LauncherError(409, "请先停止项目再删除")
         self.store.delete(project_id)
 
-    def update(self, project_id: str, payload: ProjectCreate) -> dict:
+    def update(self, project_id: str, payload: dict[str, Any]) -> dict:
         with self._lock:
             self.require_project(project_id)
             if self.processes.is_running(project_id):
                 raise LauncherError(409, "请先停止项目再编辑")
-            path = canonical_path(payload.path)
+            path = canonical_path(payload["path"])
             other_projects = [
                 project
                 for project in self.store.all()
@@ -351,10 +412,10 @@ class LauncherService:
             project = {
                 "id": project_id,
                 "path": str(path),
-                "name": payload.name.strip(),
-                "type": payload.type,
-                "command": payload.command.strip(),
-                "port": payload.port,
+                "name": payload["name"].strip(),
+                "type": payload["type"],
+                "command": payload["command"].strip(),
+                "port": payload["port"],
             }
             self.store.update(project)
         return self.view(project)
@@ -403,26 +464,26 @@ class LauncherService:
         }
 
     @staticmethod
-    def _validate(payload: ProjectCreate, path: Path, projects: list[dict]) -> None:
+    def _validate(payload: dict[str, Any], path: Path, projects: list[dict]) -> None:
         if not path.is_dir():
             raise LauncherError(422, "项目目录无效")
-        if not payload.name.strip():
+        if not payload["name"].strip():
             raise LauncherError(422, "项目名称不能为空")
-        if not payload.command.strip():
+        if not payload["command"].strip():
             raise LauncherError(422, "启动命令不能为空")
-        if not MIN_PROJECT_PORT <= payload.port <= MAX_PROJECT_PORT:
+        if not MIN_PROJECT_PORT <= payload["port"] <= MAX_PROJECT_PORT:
             raise LauncherError(
                 422, f"端口必须在 {MIN_PROJECT_PORT}–{MAX_PROJECT_PORT} 之间"
             )
-        if payload.port == APP_PORT:
+        if payload["port"] == APP_PORT:
             raise LauncherError(422, "不能使用启动器管理端口")
         normalized = comparable_path(path)
         if any(comparable_path(item["path"]) == normalized for item in projects):
             raise LauncherError(409, "该目录已添加")
-        if any(item["port"] == payload.port for item in projects):
+        if any(item["port"] == payload["port"] for item in projects):
             raise LauncherError(409, "该端口已被其他项目配置使用")
-        if not port_is_available(payload.port):
-            raise LauncherError(409, f"端口 {payload.port} 已被占用")
+        if not port_is_available(payload["port"]):
+            raise LauncherError(409, f"端口 {payload['port']} 已被占用")
 
 
 def read_source(path: Path) -> str:
@@ -573,28 +634,9 @@ def detect_project(path: Path) -> dict | None:
 
 def select_folder() -> str | None:
     try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except ImportError as exc:
-        raise LauncherError(500, "当前 Python 环境不支持 Windows 文件夹选择器") from exc
-    try:
-        import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
-        try:
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
-
-    root = tk.Tk()
-    try:
-        root.withdraw()
-        root.attributes("-topmost", True)
-        root.update()
-        selected = filedialog.askdirectory(parent=root, mustexist=True, title="选择项目文件夹")
-        return selected or None
-    finally:
-        root.destroy()
+        return select_folder_native("选择项目文件夹")
+    except RuntimeError as exc:
+        raise LauncherError(500, str(exc)) from exc
 
 
 def open_project_directory(path: str | Path) -> None:
@@ -612,88 +654,224 @@ def open_project_directory(path: str | Path) -> None:
         raise LauncherError(500, f"无法打开项目目录：{exc}") from exc
 
 
-def create_app(data_dir: Path | None = None) -> FastAPI:
+class LauncherRequestHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    @property
+    def service(self) -> LauncherService:
+        return self.server.service  # type: ignore[attr-defined]
+
+    def log_message(self, format: str, *args: Any) -> None:
+        # Suppress stderr logging so pythonw.exe (where sys.stderr is None) never fails.
+        return
+
+    def _send_bytes(
+        self,
+        status: int,
+        body: bytes,
+        content_type: str,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        if extra_headers:
+            for key, value in extra_headers.items():
+                self.send_header(key, value)
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def _send_json(self, status: int, payload: Any) -> None:
+        encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self._send_bytes(status, encoded, "application/json; charset=utf-8")
+
+    def _send_empty(self, status: int) -> None:
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _send_file(self, path: Path, content_type: str, cache_control: str | None = None) -> None:
+        try:
+            content = path.read_bytes()
+        except OSError:
+            raise LauncherError(404, "资源不存在")
+        headers = {"Cache-Control": cache_control} if cache_control else None
+        self._send_bytes(HTTPStatus.OK, content, content_type, headers)
+
+    def _read_json(self) -> Any:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise LauncherError(422, "无效的 Content-Length")
+        raw = self.rfile.read(length) if length > 0 else b""
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise LauncherError(422, "请求体不是有效的 JSON")
+
+    def _handle(self, method: str) -> None:
+        parsed = urllib.parse.urlsplit(self.path)
+        path = parsed.path
+
+        try:
+            if method == "GET":
+                if path == "/":
+                    self._send_file(TEMPLATE_FILE, "text/html; charset=utf-8", "no-cache")
+                    return
+                if path.startswith("/static/"):
+                    rel = urllib.parse.unquote(path[len("/static/"):])
+                    asset = (STATIC_DIR / rel).resolve()
+                    if STATIC_DIR.resolve() not in asset.parents or not asset.is_file():
+                        raise LauncherError(404, "资源不存在")
+                    ctype, _ = mimetypes.guess_type(str(asset))
+                    if ctype and (ctype.startswith("text/") or ctype == "application/javascript"):
+                        ctype = f"{ctype}; charset=utf-8"
+                    self._send_file(asset, ctype or "application/octet-stream")
+                    return
+                if path == "/api/projects":
+                    self._send_json(HTTPStatus.OK, self.service.list_view())
+                    return
+                if path == "/api/health":
+                    self._send_json(HTTPStatus.OK, {"status": "ok"})
+                    return
+
+            elif method == "POST":
+                if path == "/api/picker":
+                    self._send_json(HTTPStatus.OK, {"path": select_folder()})
+                    return
+                if path == "/api/projects/inspect":
+                    target = validate_inspect_payload(self._read_json())
+                    self._send_json(HTTPStatus.OK, self.service.inspect(target))
+                    return
+                if path == "/api/projects":
+                    payload = validate_project_payload(self._read_json())
+                    self._send_json(HTTPStatus.CREATED, self.service.create(payload))
+                    return
+                match = re.fullmatch(r"/api/projects/([^/]+)/(start|stop|open-folder)", path)
+                if match:
+                    project_id, action = match.groups()
+                    if action == "start":
+                        self._send_json(HTTPStatus.OK, self.service.start(project_id))
+                    elif action == "stop":
+                        self._send_json(HTTPStatus.OK, self.service.stop(project_id))
+                    else:
+                        project = self.service.require_project(project_id)
+                        open_project_directory(project["path"])
+                        self._send_empty(HTTPStatus.NO_CONTENT)
+                    return
+
+            elif method == "PUT":
+                match = re.fullmatch(r"/api/projects/([^/]+)", path)
+                if match:
+                    payload = validate_project_payload(self._read_json())
+                    self._send_json(HTTPStatus.OK, self.service.update(match.group(1), payload))
+                    return
+
+            elif method == "DELETE":
+                match = re.fullmatch(r"/api/projects/([^/]+)", path)
+                if match:
+                    self.service.delete(match.group(1))
+                    self._send_empty(HTTPStatus.NO_CONTENT)
+                    return
+
+            self._send_json(HTTPStatus.NOT_FOUND, {"detail": "接口不存在"})
+        except LauncherError as exc:
+            self._send_json(exc.status_code, {"detail": exc.detail})
+        except Exception as exc:  # pragma: no cover - defensive guard
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"detail": str(exc)})
+
+    def do_GET(self) -> None:
+        self._handle("GET")
+
+    def do_POST(self) -> None:
+        self._handle("POST")
+
+    def do_PUT(self) -> None:
+        self._handle("PUT")
+
+    def do_DELETE(self) -> None:
+        self._handle("DELETE")
+
+
+class LauncherHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        service: LauncherService,
+    ) -> None:
+        self.service = service
+        super().__init__(server_address, LauncherRequestHandler)
+
+
+def create_server(
+    data_dir: Path | None = None,
+    host: str = HOST,
+    port: int = APP_PORT,
+) -> LauncherHTTPServer:
     service = LauncherService(data_dir or BASE_DIR / ".local_data")
+    return LauncherHTTPServer((host, port), service)
 
-    @asynccontextmanager
-    async def lifespan(application: FastAPI):
-        yield
-        service.processes.stop_all()
 
-    application = FastAPI(title="本地项目启动器", lifespan=lifespan)
-    application.state.launcher = service
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="本地项目启动器")
+    parser.add_argument("--port", type=int, default=APP_PORT, help="管理控制台端口")
+    parser.add_argument("--no-browser", action="store_true", help="启动时不自动打开浏览器")
+    parser.add_argument("--no-tray", action="store_true", help="不显示系统托盘图标")
+    args = parser.parse_args(argv)
 
-    @application.exception_handler(LauncherError)
-    async def launcher_error_handler(_, exc: LauncherError):
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    server = create_server(port=args.port)
+    actual_port = server.server_address[1]
+    dashboard_url = f"http://{HOST}:{actual_port}/"
 
-    @application.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(
-            TEMPLATE_FILE,
-            media_type="text/html; charset=utf-8",
-            headers={"Cache-Control": "no-cache"},
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    if not args.no_browser:
+        threading.Thread(
+            target=lambda: webbrowser.open(dashboard_url),
+            daemon=True,
+        ).start()
+
+    def shutdown_all() -> None:
+        server.shutdown()
+        server.server_close()
+        server.service.processes.stop_all()
+
+    if os.name == "nt" and not args.no_tray:
+        tray = TrayManager(
+            tooltip=f"本地项目启动器 ({actual_port})",
+            on_open=lambda: webbrowser.open(dashboard_url),
+            on_stop_all=server.service.processes.stop_all,
+            on_exit=shutdown_all,
+            get_running_count=server.service.processes.running_count,
         )
 
-    @application.get("/static/{asset_path:path}", include_in_schema=False)
-    def static_asset(asset_path: str) -> FileResponse:
-        asset = (STATIC_DIR / asset_path).resolve()
-        if STATIC_DIR not in asset.parents or not asset.is_file():
-            raise LauncherError(404, "资源不存在")
-        return FileResponse(asset)
+        def handle_sigint(_signum, _frame) -> None:
+            tray.stop()
+            shutdown_all()
 
-    @application.get("/api/projects")
-    def list_projects() -> dict:
-        return service.list_view()
+        signal.signal(signal.SIGINT, handle_sigint)
+        try:
+            tray.run()
+        finally:
+            shutdown_all()
+        return 0
 
-    @application.post("/api/picker")
-    async def picker() -> dict:
-        return {"path": await asyncio.to_thread(select_folder)}
-
-    @application.post("/api/projects/inspect")
-    def inspect_project(payload: InspectRequest) -> dict:
-        return service.inspect(payload.path)
-
-    @application.post("/api/projects", status_code=201)
-    def create_project(payload: ProjectCreate) -> dict:
-        return service.create(payload)
-
-    @application.put("/api/projects/{project_id}")
-    def update_project(project_id: str, payload: ProjectCreate) -> dict:
-        return service.update(project_id, payload)
-
-    @application.post("/api/projects/{project_id}/start")
-    def start_project(project_id: str) -> dict:
-        return service.start(project_id)
-
-    @application.post("/api/projects/{project_id}/stop")
-    def stop_project(project_id: str) -> dict:
-        return service.stop(project_id)
-
-    @application.post("/api/projects/{project_id}/open-folder", status_code=204)
-    def open_project_folder(project_id: str) -> Response:
-        project = service.require_project(project_id)
-        open_project_directory(project["path"])
-        return Response(status_code=204)
-
-    @application.delete("/api/projects/{project_id}", status_code=204)
-    def delete_project(project_id: str) -> Response:
-        service.delete(project_id)
-        return Response(status_code=204)
-
-    return application
-
-
-app = create_app()
+    try:
+        while server_thread.is_alive():
+            server_thread.join(timeout=0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        shutdown_all()
+    return 0
 
 
 if __name__ == "__main__":
-    import threading
-    import webbrowser
-
-    def open_browser() -> None:
-        time.sleep(1.2)
-        webbrowser.open(f"http://{HOST}:{APP_PORT}/")
-
-    threading.Thread(target=open_browser, daemon=True).start()
-    uvicorn.run(app, host=HOST, port=APP_PORT, reload=False)
+    raise SystemExit(main())
