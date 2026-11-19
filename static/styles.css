@@ -210,10 +210,10 @@
     .project-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
     .project-title { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; gap: 9px; }
     .project-icon {
-      width: 26px;
-      height: 26px;
+      width: 28px;
+      height: 28px;
       border-radius: 7px;
-      flex: 0 0 26px;
+      flex: 0 0 28px;
       display: grid;
       place-items: center;
       overflow: hidden;
@@ -225,16 +225,16 @@
     .type-line { display: flex; align-items: center; gap: 7px; margin: 0; flex: 0 0 auto; }
 
     .type-badge {
-      width: 24px;
-      height: 22px;
-      border-radius: 6px;
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
       display: inline-grid;
       place-items: center;
       color: var(--accent);
       background: var(--surface-muted);
       flex: 0 0 auto;
     }
-    .type-badge svg { width: 17px; height: 17px; display: block; }
+    .type-badge svg { width: 22px; height: 22px; display: block; }
 
     .port-badge {
       border-radius: 6px;

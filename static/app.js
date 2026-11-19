@@ -9,16 +9,16 @@
 
     const typeMeta = {
       npm: {
-        label: 'npm 项目',
-        svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="3" fill="#cb3837"/><path d="M5.5 15.5v-7h4v7h-1.4v-5.4H6.9v5.4H5.5Zm5.2 0v-7h3.8v5.4h-2.4v1.6h-1.4Zm1.4-2.8h1V9.9h-1v2.8Zm3.4 2.8v-7h3v7h-1.2v-5.4h-.6v5.4h-1.2Z" fill="#fff"/></svg>'
+        label: 'Node.js / npm 项目',
+        svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.8 2.1Q12 1.4 13.2 2.1L20 6Q21.2 6.7 21.2 8.1V15.9Q21.2 17.3 20 18L13.2 21.9Q12 22.6 10.8 21.9L4 18Q2.8 17.3 2.8 15.9V8.1Q2.8 6.7 4 6Z" fill="#46a049"/><path d="M10.8 2.1Q12 1.4 13.2 2.1L20 6Q20.6 6.35 20.9 6.88L12 12L3.1 6.88Q3.4 6.35 4 6Z" fill="#fff" fill-opacity=".14"/><path d="M20.9 6.88Q21.2 7.4 21.2 8.1V15.9Q21.2 17.3 20 18L13.2 21.9Q12.6 22.25 12 22.25V12Z" fill="#0b3d12" fill-opacity=".16"/><path d="M9.4 8.45h1.6v5.2c0 1.85-1.05 2.8-2.75 2.8-.95 0-1.65-.28-2.15-.78l.78-1.36c.35.34.76.54 1.24.54.82 0 1.28-.45 1.28-1.32v-5.08Zm8.15.95c-.65-.75-1.6-1.1-2.75-1.1-1.6 0-2.65.95-2.65 2.25 0 1.3.9 1.9 2.35 2.28 1.2.3 1.68.56 1.68 1.22 0 .6-.55.98-1.38.98-.86 0-1.56-.33-2.03-.9l-.92 1.18c.65.8 1.7 1.25 3 1.25 1.8 0 3-.98 3-2.45 0-1.38-.9-1.98-2.45-2.36-1.18-.3-1.62-.55-1.62-1.18 0-.54.47-.84 1.14-.84.7 0 1.28.27 1.7.74l.93-1.07Z" fill="#144d1a" fill-opacity=".28"/><path d="M9.4 8h1.6v5.2c0 1.85-1.05 2.8-2.75 2.8-.95 0-1.65-.28-2.15-.78l.78-1.36c.35.34.76.54 1.24.54.82 0 1.28-.45 1.28-1.32V8Zm8.15.95c-.65-.75-1.6-1.1-2.75-1.1-1.6 0-2.65.95-2.65 2.25 0 1.3.9 1.9 2.35 2.28 1.2.3 1.68.56 1.68 1.22 0 .6-.55.98-1.38.98-.86 0-1.56-.33-2.03-.9l-.92 1.18c.65.8 1.7 1.25 3 1.25 1.8 0 3-.98 3-2.45 0-1.38-.9-1.98-2.45-2.36-1.18-.3-1.62-.55-1.62-1.18 0-.54.47-.84 1.14-.84.7 0 1.28.27 1.7.74l.93-1.07Z" fill="#fff"/></svg>'
       },
       python: {
         label: 'Python 项目',
-        svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.9 3c-3.5 0-3.3 1.5-3.3 1.5v1.6h3.4v.5H7.2S5 6.3 5 9.8s1.9 3.4 1.9 3.4H8v-1.7s-.1-1.9 1.9-1.9h3.3s1.8 0 1.8-1.8V4.9S15.3 3 11.9 3Zm-1.8 1.1a.65.65 0 1 1 0 1.3.65.65 0 0 1 0-1.3Z" fill="#3776ab"/><path d="M12.1 21c3.5 0 3.3-1.5 3.3-1.5v-1.6H12v-.5h4.8s2.2.3 2.2-3.2-1.9-3.4-1.9-3.4H16v1.7s.1 1.9-1.9 1.9h-3.3S9 14.4 9 16.2v2.9S8.7 21 12.1 21Zm1.8-1.1a.65.65 0 1 1 0-1.3.65.65 0 0 1 0 1.3Z" fill="#ffd43b"/></svg>'
+        svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.9 2C8.3 2 7.4 3.5 7.4 5.05V6.7H12V7.4H5.5C3.45 7.4 2 8.8 2 11.95C2 15.1 3.35 16.6 5.25 16.6H6.7V14.5C6.7 12.4 8.1 11.55 10.2 11.55H13.8C15.6 11.55 16.6 10.65 16.6 9.15V5.05C16.6 3.3 15.3 2 11.9 2Z" fill="#377ab3"/><path d="M2 11.95C2 15.1 3.35 16.6 5.25 16.6H6.7V14.5C6.7 12.4 8.1 11.55 10.2 11.55H13.8C15.6 11.55 16.6 10.65 16.6 9.15V8.1C16.1 9.6 15.1 10.4 13.5 10.4H10C7.5 10.4 5.8 11.7 5.8 14.2V15.5H5.25C3.7 15.5 2.4 14.4 2 11.95Z" fill="#1e4f7a" fill-opacity=".26"/><path d="M12.1 22C15.7 22 16.6 20.5 16.6 18.95V17.3H12V16.6H18.5C20.55 16.6 22 15.2 22 12.05C22 8.9 20.65 7.4 18.75 7.4H17.3V9.5C17.3 11.6 15.9 12.45 13.8 12.45H10.2C8.4 12.45 7.4 13.35 7.4 14.85V18.95C7.4 20.7 8.7 22 12.1 22Z" fill="#ffd43b"/><path d="M16.6 17.8V18.95C16.6 20.5 15.7 22 12.1 22C8.7 22 7.4 20.7 7.4 18.95V18C7.9 19.7 9.2 20.8 12.1 20.8C14.8 20.8 15.7 19.8 16.6 17.8ZM22 12.05C22 15.2 20.55 16.6 18.5 16.6H12V15.5H18.3C19.9 15.5 21.4 14.5 22 12.05Z" fill="#d99100" fill-opacity=".24"/><circle cx="9.5" cy="4.45" r=".95" fill="#fff"/><circle cx="14.5" cy="19.55" r=".95" fill="#fff"/></svg>'
       },
       static: {
         label: '静态站点',
-        svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M3.8 12h16.4M12 3.5a12.5 12.5 0 0 1 0 17M12 3.5a12.5 12.5 0 0 0 0 17"/></svg>'
+        svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#0ea5e9"/><path d="M19.07 4.93A10 10 0 0 1 4.93 19.07A11.5 11.5 0 0 0 19.07 4.93Z" fill="#0369a1" fill-opacity=".34"/><ellipse cx="8.5" cy="7.2" rx="3.4" ry="2.1" transform="rotate(-32 8.5 7.2)" fill="#fff" fill-opacity=".22"/><g fill="none" stroke="#fff" stroke-opacity=".92" stroke-width="1.45" stroke-linecap="round"><ellipse cx="12" cy="12" rx="4.3" ry="9.2"/><path d="M2.8 12h18.4M4.1 7.4Q12 9.4 19.9 7.4M4.1 16.6Q12 14.6 19.9 16.6"/></g></svg>'
       }
     };
 
@@ -135,7 +135,7 @@
     function initialIconSvg(name) {
       const first = Array.from((name || '').trim())[0];
       const letter = first ? first.toUpperCase() : '?';
-      return `<svg viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="7" fill="var(--accent-soft)"/><text x="14" y="15" text-anchor="middle" dominant-baseline="central" fill="var(--accent)" font-size="14" font-weight="700" font-family="inherit">${escapeSvgText(letter)}</text></svg>`;
+      return `<svg viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="7" fill="var(--accent-soft)"/><text x="14" y="15" text-anchor="middle" dominant-baseline="central" fill="var(--accent)" font-size="15" font-weight="700" font-family="inherit">${escapeSvgText(letter)}</text></svg>`;
     }
 
     function updateProjectIcon(container, project) {
