@@ -233,11 +233,13 @@ class ProcessManager:
             runtime = RuntimeProcess(process)
             self._runtimes[project_id] = runtime
 
-        time.sleep(0.2)
-        if process.poll() is not None:
-            with self._lock:
-                self._runtimes.pop(project_id, None)
-            raise LauncherError(500, f"启动命令已退出，退出码：{process.returncode}")
+        try:
+            process.wait(timeout=0.2)
+        except subprocess.TimeoutExpired:
+            return
+        with self._lock:
+            self._runtimes.pop(project_id, None)
+        raise LauncherError(500, f"启动命令已退出，退出码：{process.returncode}")
 
     def stop(self, project_id: str) -> None:
         with self._lock:
@@ -249,8 +251,9 @@ class ProcessManager:
         with self._lock:
             runtimes = list(self._runtimes.values())
             self._runtimes.clear()
-        for runtime in runtimes:
-            self._terminate(runtime)
+        if not runtimes:
+            return
+        self._terminate_many(runtimes)
 
     @staticmethod
     def _stopped_metrics() -> dict:
@@ -376,25 +379,52 @@ class ProcessManager:
             results[project_id] = self._sample_runtime(runtime, children_map)
         return results
 
-    @staticmethod
-    def _terminate(runtime: RuntimeProcess) -> None:
+    @classmethod
+    def _terminate(cls, runtime: RuntimeProcess) -> None:
+        cls._terminate_many([runtime])
+
+    @classmethod
+    def _terminate_many(cls, runtimes: list[RuntimeProcess]) -> None:
         if psutil is None:
+            for runtime in runtimes:
+                try:
+                    runtime.process.terminate()
+                except OSError:
+                    pass
+            deadline = time.monotonic() + 2.0
+            alive_runtimes: list[RuntimeProcess] = []
+            for runtime in runtimes:
+                remaining = max(0.0, deadline - time.monotonic())
+                try:
+                    runtime.process.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    alive_runtimes.append(runtime)
+                except OSError:
+                    pass
+            for runtime in alive_runtimes:
+                try:
+                    runtime.process.kill()
+                    runtime.process.wait(timeout=2)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+            return
+
+        children_map = cls._build_children_map() if len(runtimes) > 1 else None
+        processes: list[Any] = []
+        seen: set[int] = set()
+        for runtime in runtimes:
             try:
-                runtime.process.terminate()
-                runtime.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                runtime.process.kill()
-                runtime.process.wait(timeout=2)
-            except OSError:
-                pass
-            return
+                root = psutil.Process(runtime.process.pid)
+                tree = cls._collect_tree(root, children_map)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            for proc in reversed(tree):
+                if proc.pid not in seen:
+                    seen.add(proc.pid)
+                    processes.append(proc)
 
-        try:
-            root = psutil.Process(runtime.process.pid)
-            processes = [*reversed(root.children(recursive=True)), root]
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        if not processes:
             return
-
         for process in processes:
             try:
                 process.terminate()
@@ -908,7 +938,12 @@ def main(argv: list[str] | None = None) -> int:
             daemon=True,
         ).start()
 
+    shutdown_done = threading.Event()
+
     def shutdown_all() -> None:
+        if shutdown_done.is_set():
+            return
+        shutdown_done.set()
         server.shutdown()
         server.server_close()
         server.service.processes.stop_all()

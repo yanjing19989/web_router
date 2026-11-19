@@ -488,6 +488,7 @@ class TrayManager:
         self.hwnd: wintypes.HWND | None = None
         self._hicon: wintypes.HICON | None = None
         self._wndproc_ref = None
+        self._exit_requested = False
         self._taskbar_created_msg = user32.RegisterWindowMessageW("TaskbarCreated") if os.name == "nt" else 0
 
     def _add_notify_icon(self) -> None:
@@ -539,10 +540,10 @@ class TrayManager:
             if cmd == CMD_OPEN:
                 self.on_open()
             elif cmd == CMD_STOP_ALL:
-                self.on_stop_all()
+                threading.Thread(target=self.on_stop_all, daemon=True).start()
             elif cmd == CMD_EXIT:
+                self._exit_requested = True
                 self.stop()
-                self.on_exit()
         finally:
             user32.DestroyMenu(menu)
 
@@ -620,6 +621,8 @@ class TrayManager:
             self.hwnd = None
             if com_initialized:
                 ole32.CoUninitialize()
+        if self._exit_requested:
+            self.on_exit()
 
     def stop(self) -> None:
         if self.hwnd:

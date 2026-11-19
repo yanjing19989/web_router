@@ -348,3 +348,57 @@ def test_metrics_all_uses_single_process_snapshot(monkeypatch) -> None:
     assert result["p1"]["memory_vms_bytes"] == 10000
     assert result["p2"]["memory_uss_bytes"] == 5000
     assert result["p3"]["status"] == "stopped"
+
+
+def test_stop_all_terminates_all_trees_in_one_batch(monkeypatch) -> None:
+    terminated: list[int] = []
+    waited_batches: list[list[int]] = []
+
+    class FakeProc:
+        def __init__(self, pid: int, ppid: int) -> None:
+            self.pid = pid
+            self.info = {"ppid": ppid}
+
+        def terminate(self) -> None:
+            terminated.append(self.pid)
+
+        def kill(self) -> None:
+            pass
+
+    class FakePopen:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+    procs = {
+        10: FakeProc(10, 1),
+        11: FakeProc(11, 10),
+        20: FakeProc(20, 1),
+    }
+
+    class FakePsutil:
+        NoSuchProcess = LookupError
+        AccessDenied = PermissionError
+
+        @staticmethod
+        def Process(pid: int) -> FakeProc:
+            return procs[pid]
+
+        @staticmethod
+        def process_iter(attrs=None):
+            return list(procs.values())
+
+        @staticmethod
+        def wait_procs(targets, timeout=None):
+            waited_batches.append([p.pid for p in targets])
+            return targets, []
+
+    monkeypatch.setattr(launcher, "psutil", FakePsutil)
+    manager = launcher.ProcessManager()
+    manager._runtimes["a"] = launcher.RuntimeProcess(FakePopen(10))
+    manager._runtimes["b"] = launcher.RuntimeProcess(FakePopen(20))
+
+    manager.stop_all()
+
+    assert len(waited_batches) == 1
+    assert set(terminated) == {10, 11, 20}
+    assert terminated.index(11) < terminated.index(10)
