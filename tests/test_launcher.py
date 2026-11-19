@@ -286,3 +286,65 @@ def test_duplicate_paths_are_case_insensitive(tmp_path: Path, monkeypatch) -> No
             json={**payload, "path": str(project_dir).swapcase(), "port": 3001},
         )
         assert duplicate.status_code == 409
+
+
+def test_metrics_all_uses_single_process_snapshot(monkeypatch) -> None:
+    class FakeMem:
+        def __init__(self, uss: int, vms: int) -> None:
+            self.uss = uss
+            self.vms = vms
+
+    class FakeProc:
+        def __init__(self, pid: int, ppid: int, cpu: float, uss: int, vms: int) -> None:
+            self.pid = pid
+            self.info = {"ppid": ppid}
+            self._cpu = cpu
+            self._mem = FakeMem(uss, vms)
+
+        def cpu_percent(self, interval=None) -> float:
+            return self._cpu
+
+        def memory_full_info(self) -> FakeMem:
+            return self._mem
+
+    class FakePopen:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def poll(self):
+            return None
+
+    procs = {
+        100: FakeProc(100, 1, 1.5, 1000, 4000),
+        101: FakeProc(101, 100, 2.5, 2000, 6000),
+        200: FakeProc(200, 1, 3.0, 5000, 9000),
+    }
+    snapshot_calls = 0
+
+    class FakePsutil:
+        NoSuchProcess = LookupError
+        AccessDenied = PermissionError
+
+        @staticmethod
+        def Process(pid: int) -> FakeProc:
+            return procs[pid]
+
+        @staticmethod
+        def process_iter(attrs=None):
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            return list(procs.values())
+
+    monkeypatch.setattr(launcher, "psutil", FakePsutil)
+    manager = launcher.ProcessManager()
+    manager._runtimes["p1"] = launcher.RuntimeProcess(FakePopen(100))
+    manager._runtimes["p2"] = launcher.RuntimeProcess(FakePopen(200))
+
+    result = manager.metrics_all(["p1", "p2", "p3"])
+
+    assert snapshot_calls == 1
+    assert result["p1"]["cpu_percent"] == 4.0
+    assert result["p1"]["memory_uss_bytes"] == 3000
+    assert result["p1"]["memory_vms_bytes"] == 10000
+    assert result["p2"]["memory_uss_bytes"] == 5000
+    assert result["p3"]["status"] == "stopped"

@@ -172,6 +172,7 @@ class RuntimeProcess:
         self.process = process
         self.started_at = time.monotonic()
         self.cpu_processes: dict[int, Any] = {}
+        self.lock = threading.Lock()
 
 
 class ProcessManager:
@@ -251,8 +252,9 @@ class ProcessManager:
         for runtime in runtimes:
             self._terminate(runtime)
 
-    def metrics(self, project_id: str) -> dict:
-        stopped = {
+    @staticmethod
+    def _stopped_metrics() -> dict:
+        return {
             "status": "stopped",
             "pid": None,
             "cpu_percent": 0.0,
@@ -260,34 +262,66 @@ class ProcessManager:
             "memory_vms_bytes": 0,
             "uptime_seconds": 0,
         }
-        with self._lock:
-            runtime = self._runtimes.get(project_id)
-            if runtime is None:
-                return stopped
-            if runtime.process.poll() is not None:
-                self._runtimes.pop(project_id, None)
-                return stopped
 
-            if psutil is None:
-                return {
-                    "status": "running",
-                    "pid": runtime.process.pid,
-                    "cpu_percent": 0.0,
-                    "memory_uss_bytes": 0,
-                    "memory_vms_bytes": 0,
-                    "uptime_seconds": int(time.monotonic() - runtime.started_at),
-                }
-
+    @staticmethod
+    def _build_children_map() -> dict[int, list[Any]]:
+        children_map: dict[int, list[Any]] = {}
+        for proc in psutil.process_iter(["ppid"]):
             try:
-                root = psutil.Process(runtime.process.pid)
-                processes = [root, *root.children(recursive=True)]
+                ppid = proc.info.get("ppid")
             except (psutil.NoSuchProcess, psutil.AccessDenied):
-                return stopped
+                continue
+            if ppid is not None:
+                children_map.setdefault(ppid, []).append(proc)
+        return children_map
 
-            cpu_percent = 0.0
-            memory_uss_bytes = 0
-            memory_vms_bytes = 0
-            live_pids: set[int] = set()
+    @classmethod
+    def _collect_tree(
+        cls,
+        root: Any,
+        children_map: dict[int, list[Any]] | None,
+    ) -> list[Any]:
+        if children_map is None:
+            return [root, *root.children(recursive=True)]
+        processes = [root]
+        visited = {root.pid}
+        stack = [root.pid]
+        while stack:
+            parent_pid = stack.pop()
+            for child in children_map.get(parent_pid, ()):
+                if child.pid not in visited:
+                    visited.add(child.pid)
+                    processes.append(child)
+                    stack.append(child.pid)
+        return processes
+
+    @classmethod
+    def _sample_runtime(
+        cls,
+        runtime: RuntimeProcess,
+        children_map: dict[int, list[Any]] | None = None,
+    ) -> dict:
+        if psutil is None:
+            return {
+                "status": "running",
+                "pid": runtime.process.pid,
+                "cpu_percent": 0.0,
+                "memory_uss_bytes": 0,
+                "memory_vms_bytes": 0,
+                "uptime_seconds": int(time.monotonic() - runtime.started_at),
+            }
+
+        try:
+            root = psutil.Process(runtime.process.pid)
+            processes = cls._collect_tree(root, children_map)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return cls._stopped_metrics()
+
+        cpu_percent = 0.0
+        memory_uss_bytes = 0
+        memory_vms_bytes = 0
+        live_pids: set[int] = set()
+        with runtime.lock:
             for process in processes:
                 try:
                     live_pids.add(process.pid)
@@ -303,14 +337,44 @@ class ProcessManager:
                 for pid, process in runtime.cpu_processes.items()
                 if pid in live_pids
             }
-            return {
-                "status": "running",
-                "pid": runtime.process.pid,
-                "cpu_percent": round(cpu_percent, 1),
-                "memory_uss_bytes": memory_uss_bytes,
-                "memory_vms_bytes": memory_vms_bytes,
-                "uptime_seconds": int(time.monotonic() - runtime.started_at),
-            }
+        return {
+            "status": "running",
+            "pid": runtime.process.pid,
+            "cpu_percent": round(cpu_percent, 1),
+            "memory_uss_bytes": memory_uss_bytes,
+            "memory_vms_bytes": memory_vms_bytes,
+            "uptime_seconds": int(time.monotonic() - runtime.started_at),
+        }
+
+    def metrics(self, project_id: str) -> dict:
+        with self._lock:
+            runtime = self._runtimes.get(project_id)
+            if runtime is None:
+                return self._stopped_metrics()
+            if runtime.process.poll() is not None:
+                self._runtimes.pop(project_id, None)
+                return self._stopped_metrics()
+        return self._sample_runtime(runtime)
+
+    def metrics_all(self, project_ids: list[str]) -> dict[str, dict]:
+        active: list[tuple[str, RuntimeProcess]] = []
+        results: dict[str, dict] = {}
+        with self._lock:
+            for project_id in project_ids:
+                runtime = self._runtimes.get(project_id)
+                if runtime is None:
+                    results[project_id] = self._stopped_metrics()
+                elif runtime.process.poll() is not None:
+                    self._runtimes.pop(project_id, None)
+                    results[project_id] = self._stopped_metrics()
+                else:
+                    active.append((project_id, runtime))
+        if not active:
+            return results
+        children_map = self._build_children_map() if psutil is not None else None
+        for project_id, runtime in active:
+            results[project_id] = self._sample_runtime(runtime, children_map)
+        return results
 
     @staticmethod
     def _terminate(runtime: RuntimeProcess) -> None:
@@ -438,7 +502,16 @@ class LauncherService:
         return project
 
     def list_view(self) -> dict:
-        projects = [self.view(project) for project in self.store.all()]
+        raw_projects = self.store.all()
+        metrics_map = self.processes.metrics_all([item["id"] for item in raw_projects])
+        projects = [
+            {
+                **project,
+                "url": f"http://{HOST}:{project['port']}/",
+                **metrics_map[project["id"]],
+            }
+            for project in raw_projects
+        ]
         return {
             "summary": {
                 "total": len(projects),
