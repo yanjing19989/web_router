@@ -453,3 +453,22 @@ def test_process_manager_assigns_and_terminates_project_job(tmp_path: Path, monk
     manager.stop("p1")
 
     assert events == [("assign", 4321), ("terminate", 1), ("close", None)]
+
+
+def test_start_captures_stderr_on_immediate_crash(tmp_path: Path) -> None:
+    manager = launcher.ProcessManager()
+    cmd = f"{launcher.shell_quote(launcher.sys.executable)} -c \"import sys; sys.stderr.write('boom-failure\\n'); sys.exit(2)\""
+    with pytest.raises(launcher.LauncherError) as exc_info:
+        manager.start({"id": "crash", "path": str(tmp_path), "command": cmd, "port": 3000})
+    assert "退出码：2" in exc_info.value.detail
+    assert "boom-failure" in exc_info.value.detail
+
+
+def test_main_opens_existing_instance_when_port_in_use(tmp_path: Path, monkeypatch) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(launcher.webbrowser, "open", lambda url: opened.append(url) or True)
+
+    with LiveClient(tmp_path / "data") as client:
+        code = launcher.main(["--port", str(client.port), "--no-tray"])
+        assert code == 0
+        assert opened == [f"http://{launcher.HOST}:{client.port}/"]

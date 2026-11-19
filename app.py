@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import collections
+import http.client
 import json
+import locale
 import mimetypes
 import os
 import re
@@ -234,11 +237,24 @@ class ProcessManager:
                     env=environment,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                     creationflags=creation_flags,
                 )
             except OSError as exc:
                 raise LauncherError(500, f"启动失败：{exc}") from exc
+
+            stderr_lines: collections.deque[bytes] = collections.deque(maxlen=6)
+            capturing = threading.Event()
+            capturing.set()
+            drainer = None
+            stderr_stream = getattr(process, "stderr", None)
+            if stderr_stream is not None:
+                drainer = threading.Thread(
+                    target=self._drain_stderr,
+                    args=(stderr_stream, stderr_lines, capturing),
+                    daemon=True,
+                )
+                drainer.start()
 
             job = ProcessJob()
             job.assign(process)
@@ -248,11 +264,54 @@ class ProcessManager:
         try:
             process.wait(timeout=0.2)
         except subprocess.TimeoutExpired:
+            capturing.clear()
             return
         with self._lock:
             self._runtimes.pop(project_id, None)
         job.close()
-        raise LauncherError(500, f"启动命令已退出，退出码：{process.returncode}")
+        if drainer is not None:
+            drainer.join(timeout=0.2)
+        detail = self._format_stderr(stderr_lines)
+        message = f"启动命令已退出，退出码：{process.returncode}"
+        if detail:
+            message = f"{message} — {detail}"
+        raise LauncherError(500, message)
+
+    @staticmethod
+    def _drain_stderr(
+        stream: Any,
+        lines: collections.deque[bytes],
+        capturing: threading.Event,
+    ) -> None:
+        try:
+            while capturing.is_set():
+                line = stream.readline(1024)
+                if not line:
+                    return
+                if line.strip():
+                    lines.append(line)
+            lines.clear()
+            while stream.read(4096):
+                pass
+        except OSError:
+            pass
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _format_stderr(lines: collections.deque[bytes]) -> str:
+        if not lines:
+            return ""
+        raw = b"".join(lines)
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode(locale.getpreferredencoding(False) or "utf-8", errors="replace")
+        compact = " | ".join(part.strip() for part in text.splitlines() if part.strip())
+        return compact[:300]
 
     def stop(self, project_id: str) -> None:
         with self._lock:
@@ -959,6 +1018,21 @@ def create_server(
     return LauncherHTTPServer((host, port), service)
 
 
+def is_launcher_running(host: str, port: int, timeout: float = 0.5) -> bool:
+    conn = http.client.HTTPConnection(host, port, timeout=timeout)
+    try:
+        conn.request("GET", "/api/health")
+        resp = conn.getresponse()
+        if resp.status != HTTPStatus.OK:
+            return False
+        data = json.loads(resp.read().decode("utf-8"))
+        return isinstance(data, dict) and data.get("status") == "ok"
+    except (OSError, http.client.HTTPException, ValueError):
+        return False
+    finally:
+        conn.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="本地项目启动器")
     parser.add_argument("--port", type=int, default=APP_PORT, help="管理控制台端口")
@@ -966,7 +1040,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-tray", action="store_true", help="不显示系统托盘图标")
     args = parser.parse_args(argv)
 
-    server = create_server(port=args.port)
+    try:
+        server = create_server(port=args.port)
+    except OSError:
+        if args.port and is_launcher_running(HOST, args.port):
+            if not args.no_browser:
+                webbrowser.open(f"http://{HOST}:{args.port}/")
+            return 0
+        raise
     actual_port = server.server_address[1]
     dashboard_url = f"http://{HOST}:{actual_port}/"
 
