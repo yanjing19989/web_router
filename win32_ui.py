@@ -492,7 +492,7 @@ def _create_brand_icon() -> wintypes.HICON:
         return user32.LoadIconW(None, ctypes.c_void_p(IDI_APPLICATION))
 
     pixels = (ctypes.c_uint32 * (size * size)).from_address(bits.value)
-    bg = 0xFF2563EB  # brand blue
+    bg = 0xFF176B57  # brand teal (matches --accent)
     fg = 0xFFFFFFFF  # white play triangle
     for y in range(size):
         for x in range(size):

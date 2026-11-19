@@ -143,7 +143,7 @@
       if (refs.primaryMode !== primaryMode) {
         refs.primaryMode = primaryMode;
         refs.primary.dataset.action = running ? 'stop' : 'start';
-        refs.primary.className = `button ${running ? '' : 'button-primary'}`.trim();
+        refs.primary.className = `button ${running ? 'button-danger' : 'button-primary'}`.trim();
         refs.primary.disabled = busy;
         refs.primary.innerHTML = busy
           ? '<span class="spinner" aria-hidden="true"></span><span>处理中</span>'
