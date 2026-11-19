@@ -113,12 +113,44 @@
       return button;
     }
 
+    function escapeSvgText(text) {
+      return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function initialIconSvg(name) {
+      const first = Array.from((name || '').trim())[0];
+      const letter = first ? first.toUpperCase() : '?';
+      return `<svg viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="7" fill="var(--accent-soft)"/><text x="14" y="15" text-anchor="middle" dominant-baseline="central" fill="var(--accent)" font-size="14" font-weight="700" font-family="inherit">${escapeSvgText(letter)}</text></svg>`;
+    }
+
+    function updateProjectIcon(container, project) {
+      const first = Array.from((project.name || '').trim())[0];
+      const letter = first ? first.toUpperCase() : '?';
+      const iconKey = project.icon_url ? `img:${project.icon_url}` : `letter:${letter}`;
+      if (container.dataset.iconKey === iconKey) return;
+      container.dataset.iconKey = iconKey;
+      if (project.icon_url) {
+        const img = document.createElement('img');
+        img.src = project.icon_url;
+        img.alt = '';
+        img.decoding = 'async';
+        img.onerror = () => {
+          container.dataset.iconKey = `letter:${letter}`;
+          container.innerHTML = initialIconSvg(project.name);
+        };
+        container.replaceChildren(img);
+      } else {
+        container.innerHTML = initialIconSvg(project.name);
+      }
+    }
+
     function updateCard(card, project) {
       const refs = card._refs;
       const running = project.status === 'running';
       const busy = state.actionIds.has(project.id);
 
       card.classList.toggle('running', running);
+      updateProjectIcon(refs.icon, project);
       setText(refs.name, project.name);
       setText(refs.type, project.type);
       setText(refs.port, `:${project.port}`);
@@ -165,6 +197,9 @@
       head.className = 'project-head';
       const title = document.createElement('div');
       title.className = 'project-title';
+      const icon = document.createElement('span');
+      icon.className = 'project-icon';
+      icon.setAttribute('aria-hidden', 'true');
       const h3 = document.createElement('h3');
       const typeLine = document.createElement('div');
       typeLine.className = 'type-line';
@@ -173,7 +208,7 @@
       const port = document.createElement('span');
       port.className = 'port-badge';
       typeLine.append(type, port);
-      title.append(h3, typeLine);
+      title.append(icon, h3, typeLine);
       const status = document.createElement('span');
       head.append(title, status);
 
@@ -204,6 +239,7 @@
       card.append(head, metrics, details, actions);
 
       card._refs = {
+        icon,
         name: h3,
         type,
         port,

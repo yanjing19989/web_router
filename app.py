@@ -624,6 +624,7 @@ class LauncherService:
             {
                 **project,
                 "url": f"http://{HOST}:{project['port']}/",
+                "icon_url": project_icon_url(project),
                 **metrics_map[project["id"]],
             }
             for project in raw_projects
@@ -646,6 +647,7 @@ class LauncherService:
         return {
             **project,
             "url": f"http://{HOST}:{project['port']}/",
+            "icon_url": project_icon_url(project),
             **self.processes.metrics(project["id"]),
         }
 
@@ -670,6 +672,90 @@ class LauncherService:
             raise LauncherError(409, "该端口已被其他项目配置使用")
         if not port_is_available(payload["port"]):
             raise LauncherError(409, f"端口 {payload['port']} 已被占用")
+
+
+ICON_MIME_TYPES = {
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".webp": "image/webp",
+}
+
+PROJECT_ICON_CANDIDATES = (
+    "icon.svg",
+    "icon.png",
+    "icon.ico",
+    "icon.webp",
+    "favicon.svg",
+    "favicon.png",
+    "favicon.ico",
+    "logo.svg",
+    "logo.png",
+    "public/favicon.svg",
+    "public/favicon.png",
+    "public/favicon.ico",
+    "public/icon.svg",
+    "public/icon.png",
+    "public/logo.svg",
+    "public/logo.png",
+    "src/app/icon.svg",
+    "src/app/icon.png",
+    "src/app/favicon.ico",
+    "app/icon.svg",
+    "app/icon.png",
+    "app/favicon.ico",
+    "static/favicon.svg",
+    "static/favicon.png",
+    "static/favicon.ico",
+    "static/icon.svg",
+    "static/icon.png",
+    "static/logo.svg",
+    "static/logo.png",
+    "assets/favicon.svg",
+    "assets/favicon.png",
+    "assets/favicon.ico",
+    "assets/icon.svg",
+    "assets/icon.png",
+)
+
+_ICON_CACHE_TTL = 5.0
+_ICON_CACHE: dict[str, tuple[float, Path | None, int]] = {}
+_ICON_CACHE_LOCK = threading.Lock()
+
+
+def find_project_icon(path: str | Path, use_cache: bool = True) -> tuple[Path | None, int]:
+    key = str(path)
+    now = time.monotonic()
+    if use_cache:
+        with _ICON_CACHE_LOCK:
+            cached = _ICON_CACHE.get(key)
+            if cached is not None and (now - cached[0]) < _ICON_CACHE_TTL:
+                return cached[1], cached[2]
+
+    root = Path(path)
+    found: Path | None = None
+    mtime_ns = 0
+    if root.is_dir():
+        for rel in PROJECT_ICON_CANDIDATES:
+            candidate = root / rel
+            try:
+                if candidate.is_file():
+                    found = candidate
+                    mtime_ns = candidate.stat().st_mtime_ns
+                    break
+            except OSError:
+                continue
+
+    with _ICON_CACHE_LOCK:
+        _ICON_CACHE[key] = (now, found, mtime_ns)
+    return found, mtime_ns
+
+
+def project_icon_url(project: dict) -> str | None:
+    icon_path, mtime_ns = find_project_icon(project["path"])
+    if icon_path is None:
+        return None
+    return f"/api/projects/{project['id']}/icon?v={mtime_ns}"
 
 
 def read_source(path: Path) -> str:
@@ -936,6 +1022,18 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
                     return
                 if path == "/api/health":
                     self._send_json(HTTPStatus.OK, {"status": "ok"})
+                    return
+                icon_match = re.fullmatch(r"/api/projects/([^/]+)/icon", path)
+                if icon_match:
+                    project = self.service.require_project(icon_match.group(1))
+                    icon_path, _ = find_project_icon(project["path"], use_cache=False)
+                    if icon_path is None:
+                        raise LauncherError(404, "项目图标不存在")
+                    ctype = ICON_MIME_TYPES.get(
+                        icon_path.suffix.lower(),
+                        mimetypes.guess_type(str(icon_path))[0] or "application/octet-stream",
+                    )
+                    self._send_file(icon_path, ctype, "no-cache")
                     return
 
             elif method == "POST":

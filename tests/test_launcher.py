@@ -472,3 +472,35 @@ def test_main_opens_existing_instance_when_port_in_use(tmp_path: Path, monkeypat
         code = launcher.main(["--port", str(client.port), "--no-tray"])
         assert code == 0
         assert opened == [f"http://{launcher.HOST}:{client.port}/"]
+
+
+def test_project_icon_discovery_and_endpoint(tmp_path: Path, monkeypatch) -> None:
+    site_with_icon = tmp_path / "with-icon"
+    (site_with_icon / "public").mkdir(parents=True)
+    (site_with_icon / "index.html").write_text("hi", encoding="utf-8")
+    svg_bytes = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"></svg>'
+    (site_with_icon / "public" / "favicon.svg").write_bytes(svg_bytes)
+
+    site_without_icon = tmp_path / "no-icon"
+    site_without_icon.mkdir()
+    (site_without_icon / "index.html").write_text("hi", encoding="utf-8")
+    monkeypatch.setattr(launcher, "port_is_available", lambda _: True)
+
+    with LiveClient(tmp_path / "data") as client:
+        p1 = client.post("/api/projects", json={
+            "path": str(site_with_icon), "name": "alpha", "type": "static",
+            "command": "python -m http.server {port}", "port": 3010,
+        }).json()
+        p2 = client.post("/api/projects", json={
+            "path": str(site_without_icon), "name": "beta", "type": "static",
+            "command": "python -m http.server {port}", "port": 3011,
+        }).json()
+
+        assert p1["icon_url"] and p1["icon_url"].startswith(f"/api/projects/{p1['id']}/icon?v=")
+        assert p2["icon_url"] is None
+
+        icon_resp = client.get(p1["icon_url"])
+        assert icon_resp.status_code == 200
+        assert icon_resp._body == svg_bytes
+        assert "image/svg+xml" in icon_resp.headers.get("content-type", "")
+        assert client.get(f"/api/projects/{p2['id']}/icon").status_code == 404
