@@ -10,9 +10,10 @@ import app as launcher
 
 
 class LiveResponse:
-    def __init__(self, status: int, body: bytes) -> None:
+    def __init__(self, status: int, body: bytes, headers: dict[str, str] | None = None) -> None:
         self.status_code = status
         self._body = body
+        self.headers = {k.lower(): v for k, v in (headers or {}).items()}
 
     def json(self):
         return json.loads(self._body.decode("utf-8"))
@@ -34,17 +35,17 @@ class LiveClient:
         self.server.service.processes.stop_all()
         self._thread.join(timeout=2)
 
-    def request(self, method: str, path: str, json_body=None) -> LiveResponse:
+    def request(self, method: str, path: str, json_body=None, extra_headers=None) -> LiveResponse:
         conn = http.client.HTTPConnection(launcher.HOST, self.port, timeout=5)
         try:
-            headers = {}
+            headers = dict(extra_headers or {})
             body = None
             if json_body is not None:
                 body = json.dumps(json_body).encode("utf-8")
                 headers["Content-Type"] = "application/json"
             conn.request(method, path, body=body, headers=headers)
             resp = conn.getresponse()
-            return LiveResponse(resp.status, resp.read())
+            return LiveResponse(resp.status, resp.read(), dict(resp.getheaders()))
         finally:
             conn.close()
 
@@ -402,3 +403,15 @@ def test_stop_all_terminates_all_trees_in_one_batch(monkeypatch) -> None:
     assert len(waited_batches) == 1
     assert set(terminated) == {10, 11, 20}
     assert terminated.index(11) < terminated.index(10)
+
+
+def test_static_asset_etag_and_304(tmp_path: Path) -> None:
+    with LiveClient(tmp_path / "data") as client:
+        first = client.get("/static/app.js")
+        assert first.status_code == 200
+        etag = first.headers.get("etag")
+        assert etag
+
+        second = client.request("GET", "/static/app.js", extra_headers={"If-None-Match": etag})
+        assert second.status_code == 304
+        assert second._body == b""

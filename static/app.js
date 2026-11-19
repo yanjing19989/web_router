@@ -15,7 +15,8 @@
       selectingText: false,
       editingId: null,
       actionIds: new Set(),
-      filterTypes: new Set(['npm', 'python', 'static'])
+      filterTypes: new Set(['npm', 'python', 'static']),
+      pollTimer: null
     };
     const content = document.querySelector('#project-content');
     const dialog = document.querySelector('#project-dialog');
@@ -64,6 +65,11 @@
       return `${rest}秒`;
     }
 
+    function setText(element, value, withTitle = false) {
+      if (element.textContent !== value) element.textContent = value;
+      if (withTitle && element.title !== value) element.title = value;
+    }
+
     function metric(label, value) {
       const wrapper = document.createElement('div');
       wrapper.className = 'metric';
@@ -73,7 +79,7 @@
       dd.textContent = value;
       dd.title = value;
       wrapper.append(dt, dd);
-      return wrapper;
+      return { wrapper, valueEl: dd };
     }
 
     function detailRow(label, value) {
@@ -87,7 +93,7 @@
       text.textContent = value;
       text.title = value;
       row.append(name, text);
-      return row;
+      return { row, valueEl: text };
     }
 
     function actionButton(label, action, icon, classes = '', iconOnly = false) {
@@ -107,10 +113,52 @@
       return button;
     }
 
-    function renderCard(project) {
+    function updateCard(card, project) {
+      const refs = card._refs;
       const running = project.status === 'running';
+      const busy = state.actionIds.has(project.id);
+
+      card.classList.toggle('running', running);
+      setText(refs.name, project.name);
+      setText(refs.type, project.type);
+      setText(refs.port, `:${project.port}`);
+      const portTitle = `端口 ${project.port}`;
+      if (refs.port.title !== portTitle) refs.port.title = portTitle;
+
+      const statusClass = `status ${project.status}`;
+      if (refs.status.className !== statusClass) refs.status.className = statusClass;
+      setText(refs.status, running ? '运行中' : '已停止');
+
+      setText(refs.pid, project.pid ? String(project.pid) : '—', true);
+      setText(refs.cpu, running ? `${project.cpu_percent.toFixed(1)}%` : '—', true);
+      setText(refs.uss, running ? formatBytes(project.memory_uss_bytes) : '—', true);
+      setText(refs.vms, running ? formatBytes(project.memory_vms_bytes) : '—', true);
+
+      setText(refs.uptime, formatDuration(project.uptime_seconds), true);
+      setText(refs.url, project.url, true);
+      setText(refs.path, project.path, true);
+      setText(refs.command, project.command, true);
+
+      const primaryMode = busy ? 'busy' : (running ? 'stop' : 'start');
+      if (refs.primaryMode !== primaryMode) {
+        refs.primaryMode = primaryMode;
+        refs.primary.dataset.action = running ? 'stop' : 'start';
+        refs.primary.className = `button ${running ? '' : 'button-primary'}`.trim();
+        refs.primary.disabled = busy;
+        refs.primary.innerHTML = busy
+          ? '<span class="spinner" aria-hidden="true"></span><span>处理中</span>'
+          : `${running ? icons.stop : icons.play}<span>${running ? '停止' : '启动'}</span>`;
+      }
+      refs.open.disabled = !running;
+      refs.edit.disabled = running;
+      const editTitle = running ? '请先停止项目再编辑' : '编辑项目';
+      if (refs.edit.title !== editTitle) refs.edit.title = editTitle;
+      refs.remove.disabled = running;
+    }
+
+    function renderCard(project) {
       const card = document.createElement('article');
-      card.className = `project-card ${running ? 'running' : ''}`;
+      card.className = 'project-card';
       card.dataset.id = project.id;
 
       const head = document.createElement('div');
@@ -118,72 +166,89 @@
       const title = document.createElement('div');
       title.className = 'project-title';
       const h3 = document.createElement('h3');
-      h3.textContent = project.name;
       const typeLine = document.createElement('div');
       typeLine.className = 'type-line';
       const type = document.createElement('span');
       type.className = 'type-badge';
-      type.textContent = project.type;
       const port = document.createElement('span');
       port.className = 'port-badge';
-      port.textContent = `:${project.port}`;
-      port.title = `端口 ${project.port}`;
       typeLine.append(type, port);
       title.append(h3, typeLine);
       const status = document.createElement('span');
-      status.className = `status ${project.status}`;
-      status.textContent = running ? '运行中' : '已停止';
       head.append(title, status);
 
+      const pid = metric('PID', '—');
+      const cpu = metric('CPU', '—');
+      const uss = metric('专用内存', '—');
+      const vms = metric('虚拟内存', '—');
       const metrics = document.createElement('dl');
       metrics.className = 'metrics';
-      metrics.append(
-        metric('PID', project.pid ? String(project.pid) : '—'),
-        metric('CPU', running ? `${project.cpu_percent.toFixed(1)}%` : '—'),
-        metric('专用内存', running ? formatBytes(project.memory_uss_bytes) : '—'),
-        metric('虚拟内存', running ? formatBytes(project.memory_vms_bytes) : '—')
-      );
+      metrics.append(pid.wrapper, cpu.wrapper, uss.wrapper, vms.wrapper);
 
+      const uptime = detailRow('运行', '—');
+      const url = detailRow('地址', '');
+      const path = detailRow('路径', '');
+      const command = detailRow('命令', '');
       const details = document.createElement('div');
       details.className = 'details';
-      details.append(
-        detailRow('运行', formatDuration(project.uptime_seconds)),
-        detailRow('地址', project.url),
-        detailRow('路径', project.path),
-        detailRow('命令', project.command)
-      );
+      details.append(uptime.row, url.row, path.row, command.row);
 
       const actions = document.createElement('div');
       actions.className = 'project-actions';
-      const primary = actionButton(running ? '停止' : '启动', running ? 'stop' : 'start', running ? icons.stop : icons.play, running ? '' : 'button-primary');
+      const primary = actionButton('启动', 'start', icons.play, 'button-primary');
       const open = actionButton('打开', 'open', icons.open);
       const folder = actionButton('打开所在目录', 'open-folder', icons.folder, 'icon-only', true);
       const edit = actionButton('编辑项目', 'edit', icons.edit, 'icon-only', true);
       const remove = actionButton('删除项目', 'delete', icons.trash, 'button-danger icon-only', true);
-      if (running) edit.title = '请先停止项目再编辑';
-      open.disabled = !running;
-      edit.disabled = running;
-      remove.disabled = running;
-      if (state.actionIds.has(project.id)) {
-        primary.disabled = true;
-        primary.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>处理中</span>';
-      }
       actions.append(primary, open, folder, edit, remove);
       card.append(head, metrics, details, actions);
+
+      card._refs = {
+        name: h3,
+        type,
+        port,
+        status,
+        pid: pid.valueEl,
+        cpu: cpu.valueEl,
+        uss: uss.valueEl,
+        vms: vms.valueEl,
+        uptime: uptime.valueEl,
+        url: url.valueEl,
+        path: path.valueEl,
+        command: command.valueEl,
+        primary,
+        primaryMode: '',
+        open,
+        edit,
+        remove
+      };
+      updateCard(card, project);
       return card;
+    }
+
+    function syncPolling() {
+      const shouldPoll = !document.hidden && state.hasRunningProjects;
+      if (shouldPoll && !state.pollTimer) {
+        state.pollTimer = window.setInterval(() => refresh(true), 2000);
+      } else if (!shouldPoll && state.pollTimer) {
+        window.clearInterval(state.pollTimer);
+        state.pollTimer = null;
+      }
     }
 
     function render(payload) {
       state.projects = payload.projects;
       state.loaded = true;
       state.hasRunningProjects = payload.summary.running > 0;
-      document.querySelector('#total-count').textContent = payload.summary.total;
-      document.querySelector('#running-count').textContent = payload.summary.running;
-      document.querySelector('#memory-uss-total').textContent = formatBytes(payload.summary.total_memory_uss_bytes);
-      document.querySelector('#memory-vms-total').textContent = formatBytes(payload.summary.total_memory_vms_bytes);
-      content.replaceChildren();
+      syncPolling();
+      setText(document.querySelector('#total-count'), String(payload.summary.total));
+      setText(document.querySelector('#running-count'), String(payload.summary.running));
+      setText(document.querySelector('#memory-uss-total'), formatBytes(payload.summary.total_memory_uss_bytes));
+      setText(document.querySelector('#memory-vms-total'), formatBytes(payload.summary.total_memory_vms_bytes));
+
       const visibleProjects = payload.projects.filter(project => state.filterTypes.has(project.type));
       if (!visibleProjects.length) {
+        content.replaceChildren();
         if (payload.projects.length) {
           const empty = document.createElement('div');
           empty.className = 'empty';
@@ -196,10 +261,37 @@
         content.append(document.querySelector('#empty-template').content.cloneNode(true));
         return;
       }
-      const grid = document.createElement('div');
-      grid.className = 'project-grid';
-      visibleProjects.forEach(project => grid.append(renderCard(project)));
-      content.append(grid);
+
+      let grid = content.firstElementChild;
+      if (!grid || !grid.classList.contains('project-grid') || !grid.querySelector('.project-card')) {
+        grid = document.createElement('div');
+        grid.className = 'project-grid';
+        visibleProjects.forEach(project => grid.append(renderCard(project)));
+        content.replaceChildren(grid);
+        return;
+      }
+
+      const existing = new Map();
+      grid.querySelectorAll(':scope > .project-card').forEach(card => {
+        existing.set(card.dataset.id, card);
+      });
+      const visibleIds = new Set(visibleProjects.map(project => project.id));
+      existing.forEach((card, id) => {
+        if (!visibleIds.has(id)) card.remove();
+      });
+
+      visibleProjects.forEach((project, index) => {
+        let card = existing.get(project.id);
+        if (card) {
+          updateCard(card, project);
+        } else {
+          card = renderCard(project);
+        }
+        const currentAt = grid.children[index];
+        if (currentAt !== card) {
+          grid.insertBefore(card, currentAt || null);
+        }
+      });
     }
 
     function renderCurrentState() {
@@ -403,11 +495,9 @@
       state.editingId = null;
     });
     document.addEventListener('visibilitychange', () => {
+      syncPolling();
       if (!document.hidden) refresh(true, true);
     });
 
     refresh();
-    window.setInterval(() => {
-      if (!document.hidden && state.hasRunningProjects) refresh(true);
-    }, 2000);
   

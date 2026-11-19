@@ -30,6 +30,7 @@ from win32_ui import TrayManager, select_folder_native
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATE_FILE = BASE_DIR / "templates" / "index.html"
 STATIC_DIR = BASE_DIR / "static"
+STATIC_ROOT = STATIC_DIR.resolve()
 HOST = "127.0.0.1"
 APP_PORT = 8888
 MIN_PROJECT_PORT = 3000
@@ -793,10 +794,24 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
 
     def _send_file(self, path: Path, content_type: str, cache_control: str | None = None) -> None:
         try:
+            stat = path.stat()
+        except OSError:
+            raise LauncherError(404, "资源不存在")
+        etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+        headers = {"ETag": etag}
+        if cache_control:
+            headers["Cache-Control"] = cache_control
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(HTTPStatus.NOT_MODIFIED)
+            for key, value in headers.items():
+                self.send_header(key, value)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        try:
             content = path.read_bytes()
         except OSError:
             raise LauncherError(404, "资源不存在")
-        headers = {"Cache-Control": cache_control} if cache_control else None
         self._send_bytes(HTTPStatus.OK, content, content_type, headers)
 
     def _read_json(self) -> Any:
@@ -824,12 +839,12 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
                 if path.startswith("/static/"):
                     rel = urllib.parse.unquote(path[len("/static/"):])
                     asset = (STATIC_DIR / rel).resolve()
-                    if STATIC_DIR.resolve() not in asset.parents or not asset.is_file():
+                    if STATIC_ROOT not in asset.parents or not asset.is_file():
                         raise LauncherError(404, "资源不存在")
                     ctype, _ = mimetypes.guess_type(str(asset))
                     if ctype and (ctype.startswith("text/") or ctype == "application/javascript"):
                         ctype = f"{ctype}; charset=utf-8"
-                    self._send_file(asset, ctype or "application/octet-stream")
+                    self._send_file(asset, ctype or "application/octet-stream", "no-cache")
                     return
                 if path == "/api/projects":
                     self._send_json(HTTPStatus.OK, self.service.list_view())
