@@ -7,6 +7,21 @@
       trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg>'
     };
 
+    const typeMeta = {
+      npm: {
+        label: 'npm 项目',
+        svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="3" fill="#cb3837"/><path d="M5.5 15.5v-7h4v7h-1.4v-5.4H6.9v5.4H5.5Zm5.2 0v-7h3.8v5.4h-2.4v1.6h-1.4Zm1.4-2.8h1V9.9h-1v2.8Zm3.4 2.8v-7h3v7h-1.2v-5.4h-.6v5.4h-1.2Z" fill="#fff"/></svg>'
+      },
+      python: {
+        label: 'Python 项目',
+        svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.9 3c-3.5 0-3.3 1.5-3.3 1.5v1.6h3.4v.5H7.2S5 6.3 5 9.8s1.9 3.4 1.9 3.4H8v-1.7s-.1-1.9 1.9-1.9h3.3s1.8 0 1.8-1.8V4.9S15.3 3 11.9 3Zm-1.8 1.1a.65.65 0 1 1 0 1.3.65.65 0 0 1 0-1.3Z" fill="#3776ab"/><path d="M12.1 21c3.5 0 3.3-1.5 3.3-1.5v-1.6H12v-.5h4.8s2.2.3 2.2-3.2-1.9-3.4-1.9-3.4H16v1.7s.1 1.9-1.9 1.9h-3.3S9 14.4 9 16.2v2.9S8.7 21 12.1 21Zm1.8-1.1a.65.65 0 1 1 0-1.3.65.65 0 0 1 0 1.3Z" fill="#ffd43b"/></svg>'
+      },
+      static: {
+        label: '静态站点',
+        svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M3.8 12h16.4M12 3.5a12.5 12.5 0 0 1 0 17M12 3.5a12.5 12.5 0 0 0 0 17"/></svg>'
+      }
+    };
+
     const state = {
       projects: [],
       refreshing: false,
@@ -152,7 +167,19 @@
       card.classList.toggle('running', running);
       updateProjectIcon(refs.icon, project);
       setText(refs.name, project.name);
-      setText(refs.type, project.type);
+      if (refs.typeKey !== project.type) {
+        refs.typeKey = project.type;
+        const meta = typeMeta[project.type];
+        if (meta) {
+          refs.type.innerHTML = meta.svg;
+          refs.type.title = meta.label;
+          refs.type.setAttribute('aria-label', meta.label);
+        } else {
+          refs.type.textContent = project.type;
+          refs.type.title = project.type;
+          refs.type.setAttribute('aria-label', project.type);
+        }
+      }
       setText(refs.port, `:${project.port}`);
       const portTitle = `端口 ${project.port}`;
       if (refs.port.title !== portTitle) refs.port.title = portTitle;
@@ -242,6 +269,7 @@
         icon,
         name: h3,
         type,
+        typeKey: '',
         port,
         status,
         pid: pid.valueEl,
