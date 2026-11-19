@@ -415,3 +415,41 @@ def test_static_asset_etag_and_304(tmp_path: Path) -> None:
         second = client.request("GET", "/static/app.js", extra_headers={"If-None-Match": etag})
         assert second.status_code == 304
         assert second._body == b""
+
+
+def test_process_manager_assigns_and_terminates_project_job(tmp_path: Path, monkeypatch) -> None:
+    events: list[tuple[str, int | None]] = []
+
+    class FakeJob:
+        def assign(self, proc) -> bool:
+            events.append(("assign", proc.pid))
+            return True
+
+        def terminate(self, exit_code: int = 1) -> bool:
+            events.append(("terminate", exit_code))
+            return True
+
+        def close(self) -> None:
+            events.append(("close", None))
+
+    class FakePopen:
+        pid = 4321
+
+        def wait(self, timeout=None):
+            raise launcher.subprocess.TimeoutExpired("cmd", timeout or 0)
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+    manager = launcher.ProcessManager()
+    monkeypatch.setattr(launcher, "ProcessJob", FakeJob)
+    monkeypatch.setattr(launcher, "psutil", None)
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda *args, **kwargs: FakePopen())
+
+    manager.start({"id": "p1", "path": str(tmp_path), "command": "echo hi", "port": 3000})
+    manager.stop("p1")
+
+    assert events == [("assign", 4321), ("terminate", 1), ("close", None)]

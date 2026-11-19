@@ -24,7 +24,7 @@ try:
 except ImportError:  # pragma: no cover - fallback when psutil is unavailable
     psutil = None  # type: ignore[assignment]
 
-from win32_ui import TrayManager, select_folder_native
+from win32_ui import ProcessJob, TrayManager, select_folder_native
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -169,8 +169,13 @@ class ProjectStore:
 
 
 class RuntimeProcess:
-    def __init__(self, process: subprocess.Popen) -> None:
+    def __init__(
+        self,
+        process: subprocess.Popen,
+        job: ProcessJob | None = None,
+    ) -> None:
         self.process = process
+        self.job = job
         self.started_at = time.monotonic()
         self.cpu_processes: dict[int, Any] = {}
         self.lock = threading.Lock()
@@ -189,6 +194,8 @@ class ProcessManager:
             if runtime.process.poll() is None:
                 return True
             self._runtimes.pop(project_id, None)
+            if runtime.job is not None:
+                runtime.job.close()
             return False
 
     def running_count(self) -> int:
@@ -197,7 +204,9 @@ class ProcessManager:
                 pid for pid, rt in self._runtimes.items() if rt.process.poll() is not None
             ]
             for pid in dead:
-                self._runtimes.pop(pid, None)
+                rt = self._runtimes.pop(pid, None)
+                if rt is not None and rt.job is not None:
+                    rt.job.close()
             return len(self._runtimes)
 
     def start(self, project: dict) -> None:
@@ -231,7 +240,9 @@ class ProcessManager:
             except OSError as exc:
                 raise LauncherError(500, f"启动失败：{exc}") from exc
 
-            runtime = RuntimeProcess(process)
+            job = ProcessJob()
+            job.assign(process)
+            runtime = RuntimeProcess(process, job=job)
             self._runtimes[project_id] = runtime
 
         try:
@@ -240,6 +251,7 @@ class ProcessManager:
             return
         with self._lock:
             self._runtimes.pop(project_id, None)
+        job.close()
         raise LauncherError(500, f"启动命令已退出，退出码：{process.returncode}")
 
     def stop(self, project_id: str) -> None:
@@ -247,6 +259,9 @@ class ProcessManager:
             runtime = self._runtimes.pop(project_id, None)
         if runtime is not None:
             self._terminate(runtime)
+
+    def close(self) -> None:
+        self.stop_all()
 
     def stop_all(self) -> None:
         with self._lock:
@@ -357,6 +372,8 @@ class ProcessManager:
                 return self._stopped_metrics()
             if runtime.process.poll() is not None:
                 self._runtimes.pop(project_id, None)
+                if runtime.job is not None:
+                    runtime.job.close()
                 return self._stopped_metrics()
         return self._sample_runtime(runtime)
 
@@ -370,6 +387,8 @@ class ProcessManager:
                     results[project_id] = self._stopped_metrics()
                 elif runtime.process.poll() is not None:
                     self._runtimes.pop(project_id, None)
+                    if runtime.job is not None:
+                        runtime.job.close()
                     results[project_id] = self._stopped_metrics()
                 else:
                     active.append((project_id, runtime))
@@ -388,6 +407,9 @@ class ProcessManager:
     def _terminate_many(cls, runtimes: list[RuntimeProcess]) -> None:
         if psutil is None:
             for runtime in runtimes:
+                if runtime.job is not None:
+                    runtime.job.terminate()
+                    runtime.job.close()
                 try:
                     runtime.process.terminate()
                 except OSError:
@@ -424,6 +446,10 @@ class ProcessManager:
                     seen.add(proc.pid)
                     processes.append(proc)
 
+        for runtime in runtimes:
+            if runtime.job is not None:
+                runtime.job.terminate()
+                runtime.job.close()
         if not processes:
             return
         for process in processes:
@@ -962,6 +988,7 @@ def main(argv: list[str] | None = None) -> int:
         server.shutdown()
         server.server_close()
         server.service.processes.stop_all()
+        server.service.processes.close()
 
     if os.name == "nt" and not args.no_tray:
         tray = TrayManager(
