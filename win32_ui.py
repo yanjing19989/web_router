@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import os
 import queue
+import sys
 import threading
 import time
 from typing import Callable
@@ -43,6 +44,8 @@ if os.name == "nt":
     WM_LBUTTONDBLCLK = 0x0203
     WM_RBUTTONUP = 0x0205
     WM_CONTEXTMENU = 0x007B
+    WM_SETTINGCHANGE = 0x001A
+    WM_THEMECHANGED = 0x031A
 
     NIM_ADD = 0x00000000
     NIM_DELETE = 0x00000002
@@ -51,12 +54,25 @@ if os.name == "nt":
     NIF_TIP = 0x00000004
 
     MF_STRING = 0x00000000
-    MF_SEPARATOR = 0x00000800
     MF_GRAYED = 0x00000001
+    MF_POPUP = 0x00000010
+    MF_SEPARATOR = 0x00000800
+    TPM_LEFTALIGN = 0x0000
+    TPM_TOPALIGN = 0x0000
+    TPM_RIGHTBUTTON = 0x0002
     TPM_RIGHTALIGN = 0x0008
     TPM_BOTTOMALIGN = 0x0020
-    TPM_RETURNCMD = 0x0100
     TPM_NONOTIFY = 0x0080
+    TPM_RETURNCMD = 0x0100
+
+    MONITOR_DEFAULTTONEAREST = 0x00000002
+    SPI_GETHIGHCONTRAST = 0x0042
+    HCF_HIGHCONTRASTON = 0x00000001
+
+    PREFERRED_APP_MODE_DEFAULT = 0
+    PREFERRED_APP_MODE_ALLOW_DARK = 1
+    PREFERRED_APP_MODE_FORCE_DARK = 2
+    PREFERRED_APP_MODE_FORCE_LIGHT = 3
 
     IDI_APPLICATION = 32512
     DIB_RGB_COLORS = 0
@@ -66,6 +82,7 @@ if os.name == "nt":
     CMD_OPEN = 1001
     CMD_STOP_ALL = 1002
     CMD_EXIT = 1003
+    CMD_PROJECT_BASE = 2000
 
     # COM / IFileOpenDialog constants
     COINIT_APARTMENTTHREADED = 0x2
@@ -173,6 +190,21 @@ if os.name == "nt":
             ("iImage", ctypes.c_int),
         ]
 
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("rcMonitor", wintypes.RECT),
+            ("rcWork", wintypes.RECT),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+    class HIGHCONTRASTW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.UINT),
+            ("dwFlags", wintypes.DWORD),
+            ("lpszDefaultScheme", wintypes.LPWSTR),
+        ]
+
     # Configure critical Win32 signatures for 64-bit safety
     user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, WPARAM, LPARAM]
     user32.DefWindowProcW.restype = LRESULT
@@ -203,6 +235,14 @@ if os.name == "nt":
     ]
     user32.TrackPopupMenu.restype = wintypes.BOOL
     user32.DestroyMenu.argtypes = [wintypes.HMENU]
+    user32.SetMenuDefaultItem.argtypes = [wintypes.HMENU, wintypes.UINT, wintypes.UINT]
+    user32.SetMenuDefaultItem.restype = wintypes.BOOL
+    user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+    user32.MonitorFromPoint.restype = wintypes.HMONITOR
+    user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFO)]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
+    user32.SystemParametersInfoW.argtypes = [wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT]
+    user32.SystemParametersInfoW.restype = wintypes.BOOL
     user32.SetForegroundWindow.argtypes = [wintypes.HWND]
     user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
     user32.LoadIconW.argtypes = [wintypes.HINSTANCE, ctypes.c_void_p]
@@ -493,6 +533,163 @@ def select_folder_native(title: str = "选择项目文件夹") -> str | None:
     return _select_folder_on_current_thread(title)
 
 
+_PERSONALIZE_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+_UXTHEME_LOADED = False
+_UXTHEME_ALLOW_DARK_WINDOW = None
+_UXTHEME_SET_PREFERRED_APP_MODE = None
+_UXTHEME_ALLOW_DARK_APP = None
+_UXTHEME_FLUSH_MENU_THEMES = None
+_APPLIED_APP_MODE: int | None = None
+
+
+def _ensure_uxtheme_loaded() -> None:
+    global _UXTHEME_LOADED
+    global _UXTHEME_ALLOW_DARK_WINDOW
+    global _UXTHEME_SET_PREFERRED_APP_MODE
+    global _UXTHEME_ALLOW_DARK_APP
+    global _UXTHEME_FLUSH_MENU_THEMES
+    if os.name != "nt" or _UXTHEME_LOADED:
+        return
+    _UXTHEME_LOADED = True
+    try:
+        build = sys.getwindowsversion().build
+        if build < 17763:
+            return
+        uxtheme = ctypes.WinDLL("uxtheme")
+    except Exception:
+        return
+
+    try:
+        fn_window = uxtheme[133]
+        fn_window.argtypes = [wintypes.HWND, wintypes.BOOL]
+        fn_window.restype = wintypes.BOOL
+        _UXTHEME_ALLOW_DARK_WINDOW = fn_window
+    except Exception:
+        pass
+
+    try:
+        fn_app = uxtheme[135]
+        if build >= 18362:
+            fn_app.argtypes = [ctypes.c_int]
+            fn_app.restype = ctypes.c_int
+            _UXTHEME_SET_PREFERRED_APP_MODE = fn_app
+        else:
+            fn_app.argtypes = [wintypes.BOOL]
+            fn_app.restype = wintypes.BOOL
+            _UXTHEME_ALLOW_DARK_APP = fn_app
+    except Exception:
+        pass
+
+    try:
+        fn_flush = uxtheme[136]
+        fn_flush.argtypes = []
+        fn_flush.restype = None
+        _UXTHEME_FLUSH_MENU_THEMES = fn_flush
+    except Exception:
+        pass
+
+
+def _read_light_theme_flag(value_name: str) -> bool | None:
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _PERSONALIZE_REG_PATH) as key:
+            value, _reg_type = winreg.QueryValueEx(key, value_name)
+            return bool(value)
+    except OSError:
+        return None
+
+
+def is_system_dark_mode() -> bool:
+    """Return True when the Windows taskbar/system theme is dark."""
+    flag = _read_light_theme_flag("SystemUsesLightTheme")
+    if flag is None:
+        flag = _read_light_theme_flag("AppsUseLightTheme")
+    return flag is False
+
+
+def is_apps_dark_mode() -> bool:
+    """Return True when the Windows default app theme is dark."""
+    flag = _read_light_theme_flag("AppsUseLightTheme")
+    if flag is None:
+        flag = _read_light_theme_flag("SystemUsesLightTheme")
+    return flag is False
+
+
+def _is_high_contrast_enabled() -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        hc = HIGHCONTRASTW()
+        hc.cbSize = ctypes.sizeof(HIGHCONTRASTW)
+        if user32.SystemParametersInfoW(SPI_GETHIGHCONTRAST, hc.cbSize, ctypes.byref(hc), 0):
+            return bool(hc.dwFlags & HCF_HIGHCONTRASTON)
+    except Exception:
+        pass
+    return False
+
+
+def _apply_menu_theme(hwnd: int | None, *, prefer_system_theme: bool = True, force: bool = False) -> bool:
+    """Synchronize Win32 popup menu dark/light mode with Windows theme settings."""
+    global _APPLIED_APP_MODE
+    if os.name != "nt":
+        return False
+    _ensure_uxtheme_loaded()
+    if _is_high_contrast_enabled():
+        desired_mode = PREFERRED_APP_MODE_DEFAULT
+        window_dark = False
+    elif prefer_system_theme:
+        window_dark = is_system_dark_mode()
+        desired_mode = PREFERRED_APP_MODE_FORCE_DARK if window_dark else PREFERRED_APP_MODE_FORCE_LIGHT
+    else:
+        window_dark = is_apps_dark_mode()
+        desired_mode = PREFERRED_APP_MODE_ALLOW_DARK
+
+    if not force and desired_mode == _APPLIED_APP_MODE:
+        return window_dark
+
+    try:
+        if _UXTHEME_SET_PREFERRED_APP_MODE is not None:
+            _UXTHEME_SET_PREFERRED_APP_MODE(desired_mode)
+        elif _UXTHEME_ALLOW_DARK_APP is not None:
+            _UXTHEME_ALLOW_DARK_APP(bool(window_dark))
+        if hwnd and _UXTHEME_ALLOW_DARK_WINDOW is not None:
+            _UXTHEME_ALLOW_DARK_WINDOW(hwnd, bool(window_dark))
+        if _UXTHEME_FLUSH_MENU_THEMES is not None:
+            _UXTHEME_FLUSH_MENU_THEMES()
+        _APPLIED_APP_MODE = desired_mode
+    except Exception:
+        pass
+    return window_dark
+
+
+def _escape_menu_text(text: str, max_len: int = 40) -> str:
+    cleaned = text.strip()
+    if len(cleaned) > max_len:
+        cleaned = cleaned[: max_len - 1].rstrip() + "…"
+    return cleaned.replace("&", "&&")
+
+
+def _popup_alignment_flags(pt) -> int:
+    h_align = TPM_RIGHTALIGN
+    v_align = TPM_BOTTOMALIGN
+    try:
+        hmon = user32.MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST)
+        if hmon:
+            mi = MONITORINFO()
+            mi.cbSize = ctypes.sizeof(MONITORINFO)
+            if user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                mid_x = (mi.rcWork.left + mi.rcWork.right) // 2
+                mid_y = (mi.rcWork.top + mi.rcWork.bottom) // 2
+                h_align = TPM_RIGHTALIGN if pt.x >= mid_x else TPM_LEFTALIGN
+                v_align = TPM_BOTTOMALIGN if pt.y >= mid_y else TPM_TOPALIGN
+    except Exception:
+        pass
+    return h_align | v_align | TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY
+
+
 def _create_brand_icon() -> wintypes.HICON:
     """Create a 32x32 RGBA tray icon in memory with zero external image dependencies."""
     size = 32
@@ -554,16 +751,21 @@ class TrayManager:
         on_stop_all: Callable[[], None],
         on_exit: Callable[[], None],
         get_running_count: Callable[[], int],
+        get_running_projects: Callable[[], list[dict[str, object]]] | None = None,
+        on_open_project: Callable[[str], None] | None = None,
     ) -> None:
         self.tooltip = tooltip[:127]
         self.on_open = on_open
         self.on_stop_all = on_stop_all
         self.on_exit = on_exit
         self.get_running_count = get_running_count
+        self.get_running_projects = get_running_projects
+        self.on_open_project = on_open_project
         self.hwnd: wintypes.HWND | None = None
         self._hicon: wintypes.HICON | None = None
         self._wndproc_ref = None
         self._exit_requested = False
+        self._menu_open = False
         self._taskbar_created_msg = user32.RegisterWindowMessageW("TaskbarCreated") if os.name == "nt" else 0
 
     def _add_notify_icon(self) -> None:
@@ -586,14 +788,47 @@ class TrayManager:
         nid.uID = 1
         shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(nid))
 
+    def _sync_theme(self, *, force: bool = False) -> None:
+        _apply_menu_theme(self.hwnd, prefer_system_theme=True, force=force)
+
     def _show_context_menu(self) -> None:
+        if self._menu_open:
+            return
+        self._menu_open = True
+        self._sync_theme()
         menu = user32.CreatePopupMenu()
         if not menu:
+            self._menu_open = False
             return
+        project_urls: dict[int, str] = {}
         try:
-            running = self.get_running_count()
+            running_projects = self.get_running_projects() if self.get_running_projects else []
+            running = len(running_projects) if self.get_running_projects else self.get_running_count()
+
             user32.AppendMenuW(menu, MF_STRING, CMD_OPEN, "打开控制台")
-            user32.AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, f"运行中项目：{running} 个")
+            user32.SetMenuDefaultItem(menu, CMD_OPEN, 0)
+            user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
+
+            if running_projects and self.on_open_project:
+                submenu = user32.CreatePopupMenu()
+                if submenu:
+                    for index, project in enumerate(running_projects):
+                        cmd_id = CMD_PROJECT_BASE + index
+                        name = _escape_menu_text(str(project.get("name", "未命名项目")))
+                        port = project.get("port")
+                        label = f"{name}  (:{port})" if port is not None else name
+                        user32.AppendMenuW(submenu, MF_STRING, cmd_id, label)
+                        url = project.get("url")
+                        if url:
+                            project_urls[cmd_id] = str(url)
+                    if not user32.AppendMenuW(menu, MF_POPUP, int(submenu), f"运行中项目（{running}）"):
+                        user32.DestroyMenu(submenu)
+                        user32.AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, f"运行中项目：{running} 个")
+                else:
+                    user32.AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, f"运行中项目：{running} 个")
+            else:
+                user32.AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, f"运行中项目：{running} 个")
+
             stop_flags = MF_STRING if running > 0 else (MF_STRING | MF_GRAYED)
             user32.AppendMenuW(menu, stop_flags, CMD_STOP_ALL, "停止全部项目")
             user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
@@ -604,7 +839,7 @@ class TrayManager:
             user32.SetForegroundWindow(self.hwnd)
             cmd = user32.TrackPopupMenu(
                 menu,
-                TPM_RIGHTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+                _popup_alignment_flags(pt),
                 pt.x,
                 pt.y,
                 0,
@@ -614,6 +849,8 @@ class TrayManager:
             user32.PostMessageW(self.hwnd, WM_NULL, 0, 0)
             if cmd == CMD_OPEN:
                 self.on_open()
+            elif cmd in project_urls and self.on_open_project:
+                self.on_open_project(project_urls[cmd])
             elif cmd == CMD_STOP_ALL:
                 threading.Thread(target=self.on_stop_all, daemon=True).start()
             elif cmd == CMD_EXIT:
@@ -621,9 +858,14 @@ class TrayManager:
                 self.stop()
         finally:
             user32.DestroyMenu(menu)
+            self._menu_open = False
+            if is_system_dark_mode() != is_apps_dark_mode():
+                _apply_menu_theme(self.hwnd, prefer_system_theme=False)
 
     def _wnd_proc(self, hwnd, msg, wparam, lparam):
         if msg == WM_PICK_FOLDER:
+            if is_system_dark_mode() != is_apps_dark_mode():
+                _apply_menu_theme(hwnd, prefer_system_theme=False)
             while True:
                 try:
                     title, done, box = _TRAY_PICK_REQUESTS.get_nowait()
@@ -635,6 +877,19 @@ class TrayManager:
                     box["error"] = exc
                 finally:
                     done.set()
+            return 0
+        if msg == WM_SETTINGCHANGE:
+            setting = ""
+            if lparam:
+                try:
+                    setting = ctypes.wstring_at(lparam)
+                except Exception:
+                    setting = ""
+            if not setting or setting == "ImmersiveColorSet":
+                self._sync_theme(force=True)
+            return 0
+        if msg == WM_THEMECHANGED:
+            self._sync_theme(force=True)
             return 0
         if msg == self._taskbar_created_msg and self._taskbar_created_msg:
             self._add_notify_icon()
@@ -679,6 +934,7 @@ class TrayManager:
         )
         with _TRAY_HWND_LOCK:
             _ACTIVE_TRAY_HWND = self.hwnd
+        self._sync_theme(force=True)
         self._add_notify_icon()
 
         try:

@@ -504,3 +504,66 @@ def test_project_icon_discovery_and_endpoint(tmp_path: Path, monkeypatch) -> Non
         assert icon_resp._body == svg_bytes
         assert "image/svg+xml" in icon_resp.headers.get("content-type", "")
         assert client.get(f"/api/projects/{p2['id']}/icon").status_code == 404
+
+
+def test_tray_menu_text_escaping_and_truncation() -> None:
+    import win32_ui
+
+    assert win32_ui._escape_menu_text("R&D App") == "R&&D App"
+    long_name = "a" * 50
+    escaped = win32_ui._escape_menu_text(long_name, max_len=20)
+    assert len(escaped) == 20
+    assert escaped.endswith("…")
+
+
+def test_tray_dark_mode_detection_and_fallback(monkeypatch) -> None:
+    import win32_ui
+
+    values = {"SystemUsesLightTheme": False, "AppsUseLightTheme": True}
+    monkeypatch.setattr(win32_ui, "_read_light_theme_flag", lambda key: values.get(key))
+
+    assert win32_ui.is_system_dark_mode() is True
+    assert win32_ui.is_apps_dark_mode() is False
+
+    values = {"AppsUseLightTheme": False}
+    assert win32_ui.is_system_dark_mode() is True
+
+    values = {"SystemUsesLightTheme": True, "AppsUseLightTheme": True}
+    assert win32_ui.is_system_dark_mode() is False
+
+
+def test_apply_menu_theme_switches_and_flushes(monkeypatch) -> None:
+    import win32_ui
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(win32_ui.os, "name", "nt")
+    monkeypatch.setattr(win32_ui, "_ensure_uxtheme_loaded", lambda: None)
+    monkeypatch.setattr(win32_ui, "_is_high_contrast_enabled", lambda: False)
+    monkeypatch.setattr(win32_ui, "_APPLIED_APP_MODE", None)
+    monkeypatch.setattr(win32_ui, "PREFERRED_APP_MODE_DEFAULT", 0, raising=False)
+    monkeypatch.setattr(win32_ui, "PREFERRED_APP_MODE_ALLOW_DARK", 1, raising=False)
+    monkeypatch.setattr(win32_ui, "PREFERRED_APP_MODE_FORCE_DARK", 2, raising=False)
+    monkeypatch.setattr(win32_ui, "PREFERRED_APP_MODE_FORCE_LIGHT", 3, raising=False)
+    monkeypatch.setattr(win32_ui, "_UXTHEME_SET_PREFERRED_APP_MODE", lambda mode: calls.append(("mode", mode)))
+    monkeypatch.setattr(win32_ui, "_UXTHEME_ALLOW_DARK_WINDOW", lambda hwnd, allow: calls.append(("win", hwnd, allow)))
+    monkeypatch.setattr(win32_ui, "_UXTHEME_FLUSH_MENU_THEMES", lambda: calls.append(("flush",)))
+
+    monkeypatch.setattr(win32_ui, "is_system_dark_mode", lambda: True)
+    assert win32_ui._apply_menu_theme(123) is True
+    assert calls == [("mode", 2), ("win", 123, True), ("flush",)]
+
+    # Unchanged theme skips redundant flush
+    calls.clear()
+    assert win32_ui._apply_menu_theme(123) is True
+    assert calls == []
+
+    # Switching to light mode triggers ForceLight + flush
+    monkeypatch.setattr(win32_ui, "is_system_dark_mode", lambda: False)
+    assert win32_ui._apply_menu_theme(123) is False
+    assert calls == [("mode", 3), ("win", 123, False), ("flush",)]
+
+    # High contrast reverts to Default
+    calls.clear()
+    monkeypatch.setattr(win32_ui, "_is_high_contrast_enabled", lambda: True)
+    assert win32_ui._apply_menu_theme(123) is False
+    assert calls == [("mode", 0), ("win", 123, False), ("flush",)]

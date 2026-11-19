@@ -1170,12 +1170,28 @@ def main(argv: list[str] | None = None) -> int:
         server.service.processes.close()
 
     if os.name == "nt" and not args.no_tray:
+        def get_running_projects() -> list[dict[str, object]]:
+            running_items: list[dict[str, object]] = []
+            for project in server.service.store.all():
+                if server.service.processes.is_running(project["id"]):
+                    running_items.append(
+                        {
+                            "id": project["id"],
+                            "name": project["name"],
+                            "port": project["port"],
+                            "url": f"http://{HOST}:{project['port']}/",
+                        }
+                    )
+            return running_items
+
         tray = TrayManager(
             tooltip=f"本地项目启动器 ({actual_port})",
             on_open=lambda: webbrowser.open(dashboard_url),
             on_stop_all=server.service.processes.stop_all,
             on_exit=shutdown_all,
             get_running_count=server.service.processes.running_count,
+            get_running_projects=get_running_projects,
+            on_open_project=lambda url: webbrowser.open(url),
         )
 
         def handle_sigint(_signum, _frame) -> None:
