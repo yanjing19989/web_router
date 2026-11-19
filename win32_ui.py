@@ -367,6 +367,10 @@ if os.name == "nt":
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
+    _kernel32_last_error = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32_last_error.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    _kernel32_last_error.CreateMutexW.restype = wintypes.HANDLE
+    ERROR_ALREADY_EXISTS = 183
 
 
 _DPI_AWARENESS_SET = False
@@ -1079,3 +1083,26 @@ def open_folder_foreground(path: str) -> None:
             return
     if reused_candidate is not None:
         _bring_window_to_foreground(reused_candidate)
+
+
+class SingleInstanceMutex:
+    """Windows named mutex ensuring only one launcher instance runs per port."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self._handle: int | None = None
+        self.already_running = False
+        if os.name != "nt":
+            return
+        handle = _kernel32_last_error.CreateMutexW(None, False, name)
+        last_error = ctypes.get_last_error()
+        if handle and last_error == ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(handle)
+            self.already_running = True
+        elif handle:
+            self._handle = handle
+
+    def release(self) -> None:
+        if os.name == "nt" and self._handle:
+            kernel32.CloseHandle(self._handle)
+            self._handle = None

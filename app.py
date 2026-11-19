@@ -27,7 +27,7 @@ try:
 except ImportError:  # pragma: no cover - fallback when psutil is unavailable
     psutil = None  # type: ignore[assignment]
 
-from win32_ui import ProcessJob, TrayManager, open_folder_foreground, select_folder_native
+from win32_ui import ProcessJob, SingleInstanceMutex, TrayManager, open_folder_foreground, select_folder_native
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -1101,7 +1101,8 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
 
 class LauncherHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # On Windows, SO_REUSEADDR allows multiple processes to bind the same port simultaneously.
+    allow_reuse_address = os.name != "nt"
 
     def __init__(
         self,
@@ -1110,6 +1111,11 @@ class LauncherHTTPServer(ThreadingHTTPServer):
     ) -> None:
         self.service = service
         super().__init__(server_address, LauncherRequestHandler)
+
+    def server_bind(self) -> None:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 def create_server(
@@ -1143,9 +1149,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-tray", action="store_true", help="不显示系统托盘图标")
     args = parser.parse_args(argv)
 
+    instance_lock = SingleInstanceMutex(f"Local\\WebRouterLauncher_{args.port}") if args.port else None
+    if instance_lock is not None and instance_lock.already_running:
+        if not args.no_browser:
+            webbrowser.open(f"http://{HOST}:{args.port}/")
+        return 0
+
     try:
         server = create_server(port=args.port)
     except OSError:
+        if instance_lock is not None:
+            instance_lock.release()
         if args.port and is_launcher_running(HOST, args.port):
             if not args.no_browser:
                 webbrowser.open(f"http://{HOST}:{args.port}/")
@@ -1173,6 +1187,8 @@ def main(argv: list[str] | None = None) -> int:
         server.server_close()
         server.service.processes.stop_all()
         server.service.processes.close()
+        if instance_lock is not None:
+            instance_lock.release()
 
     if os.name == "nt" and not args.no_tray:
         def get_running_projects() -> list[dict[str, object]]:

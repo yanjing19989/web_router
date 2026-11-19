@@ -584,3 +584,26 @@ def test_python_executable_prefers_console_python_over_pythonw(tmp_path: Path, m
 
     python_exe.unlink()
     assert launcher.python_executable(project_dir) == pythonw
+
+
+def test_main_exits_early_when_single_instance_mutex_held(monkeypatch) -> None:
+    opened: list[str] = []
+
+    class HeldMutex:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.already_running = True
+
+        def release(self) -> None:
+            pass
+
+    monkeypatch.setattr(launcher, "SingleInstanceMutex", HeldMutex)
+    monkeypatch.setattr(launcher.webbrowser, "open", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(launcher, "create_server", lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not bind")))
+
+    assert launcher.main(["--port", "8888", "--no-tray"]) == 0
+    assert opened == [f"http://{launcher.HOST}:8888/"]
+
+    opened.clear()
+    assert launcher.main(["--port", "8888", "--no-browser", "--no-tray"]) == 0
+    assert opened == []
