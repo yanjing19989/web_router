@@ -4,6 +4,7 @@ import ctypes
 import os
 import queue
 import threading
+import time
 from typing import Callable
 
 if os.name == "nt":
@@ -19,6 +20,7 @@ if os.name == "nt":
     LPARAM = ctypes.c_ssize_t
     LRESULT = ctypes.c_ssize_t
     WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, WPARAM, LPARAM)
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, LPARAM)
 
     # Window & Tray constants
     WM_NULL = 0x0000
@@ -32,6 +34,9 @@ if os.name == "nt":
     WS_EX_TOOLWINDOW = 0x00000080
     WS_EX_LAYERED = 0x00080000
     LWA_ALPHA = 0x00000002
+    ASFW_ANY = 0xFFFFFFFF
+    SW_SHOWNORMAL = 1
+    SW_RESTORE = 9
     SM_CXSCREEN = 0
     SM_CYSCREEN = 1
     WM_LBUTTONUP = 0x0202
@@ -246,6 +251,25 @@ if os.name == "nt":
     user32.AttachThreadInput.restype = wintypes.BOOL
     user32.BringWindowToTop.argtypes = [wintypes.HWND]
     user32.BringWindowToTop.restype = wintypes.BOOL
+    user32.AllowSetForegroundWindow.argtypes = [wintypes.DWORD]
+    user32.AllowSetForegroundWindow.restype = wintypes.BOOL
+    user32.EnumWindows.argtypes = [WNDENUMPROC, LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.IsIconic.argtypes = [wintypes.HWND]
+    user32.IsIconic.restype = wintypes.BOOL
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.ShowWindow.restype = wintypes.BOOL
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetClassNameW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
+    shell32.ShellExecuteW.argtypes = [
+        wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
+        wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_int,
+    ]
+    shell32.ShellExecuteW.restype = ctypes.c_void_p
     user32.SetLayeredWindowAttributes.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_ubyte, wintypes.DWORD]
     user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
@@ -729,3 +753,73 @@ class ProcessJob:
         if os.name == "nt" and self._handle:
             kernel32.CloseHandle(self._handle)
             self._handle = None
+
+
+def _list_explorer_windows() -> list[tuple[int, str]]:
+    windows: list[tuple[int, str]] = []
+    cls_buf = ctypes.create_unicode_buffer(64)
+    title_buf = ctypes.create_unicode_buffer(512)
+
+    def callback(hwnd: int, _lparam: int) -> bool:
+        if user32.IsWindowVisible(hwnd):
+            if user32.GetClassNameW(hwnd, cls_buf, 64) and cls_buf.value == "CabinetWClass":
+                user32.GetWindowTextW(hwnd, title_buf, 512)
+                windows.append((hwnd, title_buf.value))
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(callback), 0)
+    return windows
+
+
+def _bring_window_to_foreground(hwnd: int) -> None:
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, SW_RESTORE)
+    fg = user32.GetForegroundWindow()
+    cur_tid = kernel32.GetCurrentThreadId()
+    fg_tid = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+    target_tid = user32.GetWindowThreadProcessId(hwnd, None)
+    attached_fg = bool(fg_tid and fg_tid != cur_tid and user32.AttachThreadInput(cur_tid, fg_tid, True))
+    attached_target = bool(
+        target_tid and target_tid != cur_tid and target_tid != fg_tid
+        and user32.AttachThreadInput(cur_tid, target_tid, True)
+    )
+    try:
+        user32.AllowSetForegroundWindow(ASFW_ANY)
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached_target:
+            user32.AttachThreadInput(cur_tid, target_tid, False)
+        if attached_fg:
+            user32.AttachThreadInput(cur_tid, fg_tid, False)
+
+
+def open_folder_foreground(path: str) -> None:
+    if os.name != "nt":
+        raise OSError("仅 Windows 支持前台打开资源管理器")
+    before = {hwnd for hwnd, _ in _list_explorer_windows()}
+    user32.AllowSetForegroundWindow(ASFW_ANY)
+    result = shell32.ShellExecuteW(None, "open", path, None, None, SW_SHOWNORMAL)
+    if not result or int(result) <= 32:
+        raise OSError(f"ShellExecuteW 打开目录失败（代码：{result}）")
+
+    folder_name = os.path.basename(path.rstrip("\/")).casefold()
+    deadline = time.monotonic() + 0.6
+    reused_candidate: int | None = None
+    while time.monotonic() < deadline:
+        time.sleep(0.05)
+        current = _list_explorer_windows()
+        for hwnd, _title in current:
+            if hwnd not in before:
+                _bring_window_to_foreground(hwnd)
+                return
+        if reused_candidate is None and folder_name:
+            for hwnd, title in current:
+                if folder_name in title.casefold():
+                    reused_candidate = hwnd
+                    break
+        if reused_candidate is not None and (deadline - time.monotonic()) < 0.35:
+            _bring_window_to_foreground(reused_candidate)
+            return
+    if reused_candidate is not None:
+        _bring_window_to_foreground(reused_candidate)

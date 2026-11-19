@@ -27,7 +27,7 @@ try:
 except ImportError:  # pragma: no cover - fallback when psutil is unavailable
     psutil = None  # type: ignore[assignment]
 
-from win32_ui import ProcessJob, TrayManager, select_folder_native
+from win32_ui import ProcessJob, TrayManager, open_folder_foreground, select_folder_native
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -917,7 +917,7 @@ def open_project_directory(path: str | Path) -> None:
         raise LauncherError(422, "项目目录无效")
     try:
         if os.name == "nt":
-            os.startfile(str(directory))
+            open_folder_foreground(str(directory))
         elif sys.platform == "darwin":
             subprocess.Popen(["open", str(directory)])
         else:
