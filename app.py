@@ -770,7 +770,12 @@ def python_executable(path: Path) -> Path:
         candidate = path / environment / "Scripts" / "python.exe"
         if candidate.is_file():
             return candidate
-    return Path(sys.executable)
+    current = Path(sys.executable)
+    if current.name.casefold() == "pythonw.exe":
+        console_python = current.with_name("python.exe")
+        if console_python.is_file():
+            return console_python
+    return current
 
 
 def python_module_entries(path: Path) -> list[tuple[str, Path]]:
@@ -862,7 +867,7 @@ def detect_project(path: Path) -> dict | None:
 
     candidates = [
         candidate
-        for candidate in (path / "main.py", path / "app.py")
+        for candidate in (path / "main.py", path / "app.py", path / "web_gui.py")
         if candidate.is_file()
     ]
     for candidate in candidates:

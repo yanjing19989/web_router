@@ -567,3 +567,20 @@ def test_apply_menu_theme_switches_and_flushes(monkeypatch) -> None:
     monkeypatch.setattr(win32_ui, "_is_high_contrast_enabled", lambda: True)
     assert win32_ui._apply_menu_theme(123) is False
     assert calls == [("mode", 0), ("win", 123, False), ("flush",)]
+
+
+def test_python_executable_prefers_console_python_over_pythonw(tmp_path: Path, monkeypatch) -> None:
+    py_dir = tmp_path / "py"
+    py_dir.mkdir()
+    pythonw = py_dir / "pythonw.exe"
+    python_exe = py_dir / "python.exe"
+    pythonw.touch()
+    python_exe.touch()
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    monkeypatch.setattr(launcher.sys, "executable", str(pythonw))
+    assert launcher.python_executable(project_dir) == python_exe
+
+    python_exe.unlink()
+    assert launcher.python_executable(project_dir) == pythonw
