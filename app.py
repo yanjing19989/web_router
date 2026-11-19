@@ -375,19 +375,23 @@ class LauncherService:
             **detection,
         }
 
+    @staticmethod
+    def _build_project(project_id: str, path: Path, payload: dict[str, Any]) -> dict:
+        return {
+            "id": project_id,
+            "path": str(path),
+            "name": payload["name"].strip(),
+            "type": payload["type"],
+            "command": payload["command"].strip(),
+            "port": payload["port"],
+        }
+
     def create(self, payload: dict[str, Any]) -> dict:
         with self._lock:
             path = canonical_path(payload["path"])
             projects = self.store.all()
             self._validate(payload, path, projects)
-            project = {
-                "id": uuid.uuid4().hex,
-                "path": str(path),
-                "name": payload["name"].strip(),
-                "type": payload["type"],
-                "command": payload["command"].strip(),
-                "port": payload["port"],
-            }
+            project = self._build_project(uuid.uuid4().hex, path, payload)
             self.store.add(project)
         return self.view(project)
 
@@ -409,14 +413,7 @@ class LauncherService:
                 if project["id"] != project_id
             ]
             self._validate(payload, path, other_projects)
-            project = {
-                "id": project_id,
-                "path": str(path),
-                "name": payload["name"].strip(),
-                "type": payload["type"],
-                "command": payload["command"].strip(),
-                "port": payload["port"],
-            }
+            project = self._build_project(project_id, path, payload)
             self.store.update(project)
         return self.view(project)
 

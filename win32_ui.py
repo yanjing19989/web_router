@@ -24,7 +24,6 @@ if os.name == "nt":
     WM_NULL = 0x0000
     WM_DESTROY = 0x0002
     WM_CLOSE = 0x0010
-    WM_COMMAND = 0x0111
     WM_USER = 0x0400
     WM_TRAYICON = WM_USER + 1
     WM_PICK_FOLDER = WM_USER + 2
@@ -41,7 +40,6 @@ if os.name == "nt":
     WM_CONTEXTMENU = 0x007B
 
     NIM_ADD = 0x00000000
-    NIM_MODIFY = 0x00000001
     NIM_DELETE = 0x00000002
     NIF_MESSAGE = 0x00000001
     NIF_ICON = 0x00000002
@@ -256,9 +254,14 @@ if os.name == "nt":
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 
 
+_DPI_AWARENESS_SET = False
+
+
 def enable_dpi_awareness() -> None:
-    if os.name != "nt":
+    global _DPI_AWARENESS_SET
+    if os.name != "nt" or _DPI_AWARENESS_SET:
         return
+    _DPI_AWARENESS_SET = True
     try:
         # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
         user32.SetProcessDpiAwarenessContext(ctypes.c_ssize_t(-4))

@@ -31,7 +31,7 @@
         let message = `请求失败（${response.status}）`;
         try {
           const body = await response.json();
-          if (body.detail) message = Array.isArray(body.detail) ? body.detail[0]?.msg || message : body.detail;
+          if (body.detail) message = body.detail;
         } catch (_) {}
         throw new Error(message);
       }
@@ -90,15 +90,20 @@
       return row;
     }
 
-    function actionButton(label, action, icon, classes = '') {
+    function actionButton(label, action, icon, classes = '', iconOnly = false) {
       const button = document.createElement('button');
       button.type = 'button';
-      button.className = `button ${classes}`;
+      button.className = `button ${classes}`.trim();
       button.dataset.action = action;
       button.innerHTML = icon;
-      const text = document.createElement('span');
-      text.textContent = label;
-      button.append(text);
+      if (iconOnly) {
+        button.setAttribute('aria-label', label);
+        button.title = label;
+      } else {
+        const text = document.createElement('span');
+        text.textContent = label;
+        button.append(text);
+      }
       return button;
     }
 
@@ -152,18 +157,10 @@
       actions.className = 'project-actions';
       const primary = actionButton(running ? '停止' : '启动', running ? 'stop' : 'start', running ? icons.stop : icons.play, running ? '' : 'button-primary');
       const open = actionButton('打开', 'open', icons.open);
-      const folder = actionButton('打开目录', 'open-folder', icons.folder, 'icon-only');
-      const edit = actionButton('编辑', 'edit', icons.edit, 'icon-only');
-      const remove = actionButton('删除', 'delete', icons.trash, 'button-danger icon-only');
-      folder.querySelector('span').remove();
-      folder.setAttribute('aria-label', '打开所在目录');
-      folder.title = '打开所在目录';
-      edit.querySelector('span').remove();
-      edit.setAttribute('aria-label', '编辑项目');
-      edit.title = running ? '请先停止项目再编辑' : '编辑项目';
-      remove.querySelector('span').remove();
-      remove.setAttribute('aria-label', '删除项目');
-      remove.title = '删除项目';
+      const folder = actionButton('打开所在目录', 'open-folder', icons.folder, 'icon-only', true);
+      const edit = actionButton('编辑项目', 'edit', icons.edit, 'icon-only', true);
+      const remove = actionButton('删除项目', 'delete', icons.trash, 'button-danger icon-only', true);
+      if (running) edit.title = '请先停止项目再编辑';
       open.disabled = !running;
       edit.disabled = running;
       remove.disabled = running;
@@ -205,6 +202,18 @@
       content.append(grid);
     }
 
+    function renderCurrentState() {
+      render({
+        summary: {
+          total: state.projects.length,
+          running: state.projects.filter(item => item.status === 'running').length,
+          total_memory_uss_bytes: state.projects.reduce((sum, item) => sum + item.memory_uss_bytes, 0),
+          total_memory_vms_bytes: state.projects.reduce((sum, item) => sum + item.memory_vms_bytes, 0)
+        },
+        projects: state.projects
+      });
+    }
+
     function updateProjectFilters() {
       const allSelected = state.filterTypes.size === 3;
       document.querySelectorAll('#project-filters [data-filter]').forEach(button => {
@@ -226,15 +235,7 @@
         state.filterTypes.add(type);
       }
       updateProjectFilters();
-      render({
-        summary: {
-          total: state.projects.length,
-          running: state.projects.filter(item => item.status === 'running').length,
-          total_memory_uss_bytes: state.projects.reduce((sum, item) => sum + item.memory_uss_bytes, 0),
-          total_memory_vms_bytes: state.projects.reduce((sum, item) => sum + item.memory_vms_bytes, 0)
-        },
-        projects: state.projects
-      });
+      renderCurrentState();
     }
 
     function hasActiveSelection() {
@@ -362,15 +363,7 @@
       if (action === 'delete' && !window.confirm(`确定删除“${project.name}”吗？`)) return;
 
       state.actionIds.add(id);
-      render({
-        summary: {
-          total: state.projects.length,
-          running: state.projects.filter(item => item.status === 'running').length,
-          total_memory_uss_bytes: state.projects.reduce((sum, item) => sum + item.memory_uss_bytes, 0),
-          total_memory_vms_bytes: state.projects.reduce((sum, item) => sum + item.memory_vms_bytes, 0)
-        },
-        projects: state.projects
-      });
+      renderCurrentState();
       try {
         if (action === 'delete') {
           await api(`/api/projects/${id}`, { method: 'DELETE' });
