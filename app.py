@@ -109,6 +109,15 @@ def validate_project_payload(data: Any) -> dict[str, Any]:
     }
 
 
+def validate_reorder_payload(data: Any) -> list[str]:
+    if not isinstance(data, dict) or not isinstance(data.get("ids"), list):
+        raise LauncherError(422, "请求参数无效：缺少 ids 列表")
+    ids = data["ids"]
+    if not all(isinstance(item, str) and item for item in ids):
+        raise LauncherError(422, "项目 ID 列表无效")
+    return ids
+
+
 class ProjectStore:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
@@ -160,6 +169,17 @@ class ProjectStore:
                 return False
             self._save()
             return True
+
+    def reorder(self, ids: list[str]) -> list[dict]:
+        with self._lock:
+            if len(ids) != len(self._projects) or len(set(ids)) != len(ids):
+                raise LauncherError(422, "项目排序列表与当前项目不匹配")
+            by_id = {item["id"]: item for item in self._projects}
+            if any(project_id not in by_id for project_id in ids):
+                raise LauncherError(422, "项目排序列表包含未知项目")
+            self._projects = [by_id[project_id] for project_id in ids]
+            self._save()
+            return [dict(item) for item in self._projects]
 
     def _save(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -596,6 +616,11 @@ class LauncherService:
             project = self._build_project(project_id, path, payload)
             self.store.update(project)
         return self.view(project)
+
+    def reorder(self, ids: list[str]) -> dict:
+        with self._lock:
+            self.store.reorder(ids)
+        return self.list_view()
 
     def start(self, project_id: str) -> dict:
         project = self.require_project(project_id)
@@ -1067,6 +1092,10 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
                     return
 
             elif method == "PUT":
+                if path == "/api/projects/reorder":
+                    ids = validate_reorder_payload(self._read_json())
+                    self._send_json(HTTPStatus.OK, self.service.reorder(ids))
+                    return
                 match = re.fullmatch(r"/api/projects/([^/]+)", path)
                 if match:
                     payload = validate_project_payload(self._read_json())

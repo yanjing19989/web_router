@@ -607,3 +607,45 @@ def test_main_exits_early_when_single_instance_mutex_held(monkeypatch) -> None:
     opened.clear()
     assert launcher.main(["--port", "8888", "--no-browser", "--no-tray"]) == 0
     assert opened == []
+
+
+def test_project_reorder_api_and_validation(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(launcher, "port_is_available", lambda _: True)
+    dirs = []
+    for name in ("alpha", "beta", "gamma"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "index.html").write_text(name, encoding="utf-8")
+        dirs.append((name, d))
+
+    with LiveClient(tmp_path / "data") as client:
+        ids = []
+        for idx, (name, d) in enumerate(dirs):
+            resp = client.post(
+                "/api/projects",
+                json={
+                    "path": str(d),
+                    "name": name,
+                    "type": "static",
+                    "command": "python -m http.server {port}",
+                    "port": 3100 + idx,
+                },
+            )
+            assert resp.status_code == 201
+            ids.append(resp.json()["id"])
+
+        reordered = [ids[2], ids[0], ids[1]]
+        resp = client.put("/api/projects/reorder", json={"ids": reordered})
+        assert resp.status_code == 200
+        assert [item["id"] for item in resp.json()["projects"]] == reordered
+        assert [item["id"] for item in client.get("/api/projects").json()["projects"]] == reordered
+
+        # Persistence check across reload
+        reloaded = launcher.ProjectStore(tmp_path / "data")
+        assert [item["id"] for item in reloaded.all()] == reordered
+
+        # Validation failures
+        assert client.put("/api/projects/reorder", json={"ids": [ids[0]]}).status_code == 422
+        assert client.put("/api/projects/reorder", json={"ids": [ids[0], ids[0], ids[1]]}).status_code == 422
+        assert client.put("/api/projects/reorder", json={"ids": [ids[0], ids[1], "unknown"]}).status_code == 422
+        assert client.put("/api/projects/reorder", json={"bad": []}).status_code == 422

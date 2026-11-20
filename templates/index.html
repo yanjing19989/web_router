@@ -55,7 +55,13 @@
             <button type="button" class="filter-option active" data-filter="python" aria-pressed="true">Python</button>
             <button type="button" class="filter-option active" data-filter="static" aria-pressed="true">静态</button>
           </div>
-          <span class="refresh-note">运行指标每 2 秒刷新</span>
+          <div class="section-tools">
+            <span class="refresh-note">运行指标每 2 秒刷新</span>
+            <button type="button" class="view-toggle" id="toggle-compact" aria-pressed="false" title="切换紧凑视图">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+              <span>紧凑视图</span>
+            </button>
+          </div>
         </div>
         <div id="project-content">
           <div class="project-grid" aria-label="正在加载项目"><div class="skeleton"></div><div class="skeleton"></div></div>

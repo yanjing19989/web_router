@@ -4,7 +4,9 @@
       open: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 4h6v6m0-6-9 9"/><path d="M19 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg>',
       folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 9h18"/></svg>',
       edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m14 5 5 5M4 20l3.5-.7L19 7.8a2.1 2.1 0 0 0-3-3L4.7 16.3 4 20Z"/></svg>',
-      trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg>'
+      trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg>',
+      grip: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="5.5" cy="3.5" r="1.25"/><circle cx="10.5" cy="3.5" r="1.25"/><circle cx="5.5" cy="8" r="1.25"/><circle cx="10.5" cy="8" r="1.25"/><circle cx="5.5" cy="12.5" r="1.25"/><circle cx="10.5" cy="12.5" r="1.25"/></svg>',
+      chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>'
     };
 
     const typeMeta = {
@@ -22,12 +24,32 @@
       }
     };
 
+    const COMPACT_STORAGE_KEY = 'web_router.compact_mode';
+
+    function loadCompactMode() {
+      try {
+        return window.localStorage.getItem(COMPACT_STORAGE_KEY) === '1';
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function saveCompactMode(enabled) {
+      try {
+        window.localStorage.setItem(COMPACT_STORAGE_KEY, enabled ? '1' : '0');
+      } catch (_) {}
+    }
+
     const state = {
       projects: [],
       refreshing: false,
       loaded: false,
       hasRunningProjects: false,
       selectingText: false,
+      dragging: false,
+      reordering: false,
+      compact: loadCompactMode(),
+      expandedIds: new Set(),
       editingId: null,
       actionIds: new Set(),
       filterTypes: new Set(['npm', 'python', 'static']),
@@ -37,6 +59,7 @@
     const dialog = document.querySelector('#project-dialog');
     const form = document.querySelector('#project-form');
     const addButton = document.querySelector('#add-project');
+    const compactButton = document.querySelector('#toggle-compact');
 
     async function api(url, options = {}) {
       const response = await fetch(url, {
@@ -85,6 +108,13 @@
       if (withTitle && element.title !== value) element.title = value;
     }
 
+    function syncCompactMode() {
+      document.body.classList.toggle('compact-mode', state.compact);
+      compactButton.classList.toggle('active', state.compact);
+      compactButton.setAttribute('aria-pressed', String(state.compact));
+      compactButton.title = state.compact ? '切换为详细视图' : '切换为紧凑视图';
+    }
+
     function metric(label, value) {
       const wrapper = document.createElement('div');
       wrapper.className = 'metric';
@@ -95,6 +125,15 @@
       dd.title = value;
       wrapper.append(dt, dd);
       return { wrapper, valueEl: dd };
+    }
+
+    function compactStat(label) {
+      const item = document.createElement('span');
+      item.textContent = label;
+      const valueEl = document.createElement('strong');
+      valueEl.textContent = '—';
+      item.append(valueEl);
+      return { item, valueEl };
     }
 
     function detailRow(label, value) {
@@ -163,8 +202,17 @@
       const refs = card._refs;
       const running = project.status === 'running';
       const busy = state.actionIds.has(project.id);
+      const expanded = state.expandedIds.has(project.id);
 
       card.classList.toggle('running', running);
+      card.classList.toggle('expanded', expanded);
+      refs.expand.setAttribute('aria-expanded', String(expanded));
+      const expandTitle = expanded ? '收起详情' : '展开详情';
+      if (refs.expand.title !== expandTitle) {
+        refs.expand.title = expandTitle;
+        refs.expand.setAttribute('aria-label', expandTitle);
+      }
+
       updateProjectIcon(refs.icon, project);
       setText(refs.name, project.name);
       if (refs.typeKey !== project.type) {
@@ -188,10 +236,20 @@
       if (refs.status.className !== statusClass) refs.status.className = statusClass;
       setText(refs.status, running ? '运行中' : '已停止');
 
-      setText(refs.pid, project.pid ? String(project.pid) : '—', true);
-      setText(refs.cpu, running ? `${project.cpu_percent.toFixed(1)}%` : '—', true);
-      setText(refs.uss, running ? formatBytes(project.memory_uss_bytes) : '—', true);
-      setText(refs.vms, running ? formatBytes(project.memory_vms_bytes) : '—', true);
+      const pidText = project.pid ? String(project.pid) : '—';
+      const cpuText = running ? `${project.cpu_percent.toFixed(1)}%` : '—';
+      const ussText = running ? formatBytes(project.memory_uss_bytes) : '—';
+      const vmsText = running ? formatBytes(project.memory_vms_bytes) : '—';
+
+      setText(refs.compactPid, pidText);
+      setText(refs.compactCpu, cpuText);
+      setText(refs.compactUss, ussText);
+      setText(refs.compactVms, vmsText);
+
+      setText(refs.pid, pidText, true);
+      setText(refs.cpu, cpuText, true);
+      setText(refs.uss, ussText, true);
+      setText(refs.vms, vmsText, true);
 
       setText(refs.uptime, formatDuration(project.uptime_seconds), true);
       setText(refs.url, project.url, true);
@@ -222,6 +280,14 @@
 
       const head = document.createElement('div');
       head.className = 'project-head';
+
+      const handle = document.createElement('button');
+      handle.type = 'button';
+      handle.className = 'drag-handle';
+      handle.setAttribute('aria-label', '拖拽排序');
+      handle.title = '拖拽排序';
+      handle.innerHTML = icons.grip;
+
       const title = document.createElement('div');
       title.className = 'project-title';
       const icon = document.createElement('span');
@@ -236,8 +302,26 @@
       port.className = 'port-badge';
       typeLine.append(type, port);
       title.append(icon, h3, typeLine);
+
+      const headEnd = document.createElement('div');
+      headEnd.className = 'project-head-end';
       const status = document.createElement('span');
-      head.append(title, status);
+      const expand = document.createElement('button');
+      expand.type = 'button';
+      expand.className = 'expand-toggle';
+      expand.dataset.action = 'toggle-expand';
+      expand.setAttribute('aria-expanded', 'false');
+      expand.innerHTML = icons.chevron;
+      headEnd.append(status, expand);
+      head.append(handle, title, headEnd);
+
+      const compactPid = compactStat('PID');
+      const compactCpu = compactStat('CPU');
+      const compactUss = compactStat('专用');
+      const compactVms = compactStat('虚拟');
+      const compactMetrics = document.createElement('div');
+      compactMetrics.className = 'compact-metrics';
+      compactMetrics.append(compactPid.item, compactCpu.item, compactUss.item, compactVms.item);
 
       const pid = metric('PID', '—');
       const cpu = metric('CPU', '—');
@@ -255,6 +339,13 @@
       details.className = 'details';
       details.append(uptime.row, url.row, path.row, command.row);
 
+      const cardBody = document.createElement('div');
+      cardBody.className = 'card-body';
+      const cardBodyInner = document.createElement('div');
+      cardBodyInner.className = 'card-body-inner';
+      cardBodyInner.append(metrics, details);
+      cardBody.append(cardBodyInner);
+
       const actions = document.createElement('div');
       actions.className = 'project-actions';
       const primary = actionButton('启动', 'start', icons.play, 'button-primary');
@@ -263,7 +354,7 @@
       const edit = actionButton('编辑项目', 'edit', icons.edit, 'icon-only', true);
       const remove = actionButton('删除项目', 'delete', icons.trash, 'button-danger icon-only', true);
       actions.append(primary, open, folder, edit, remove);
-      card.append(head, metrics, details, actions);
+      card.append(head, compactMetrics, cardBody, actions);
 
       card._refs = {
         icon,
@@ -272,6 +363,11 @@
         typeKey: '',
         port,
         status,
+        expand,
+        compactPid: compactPid.valueEl,
+        compactCpu: compactCpu.valueEl,
+        compactUss: compactUss.valueEl,
+        compactVms: compactVms.valueEl,
         pid: pid.valueEl,
         cpu: cpu.valueEl,
         uss: uss.valueEl,
@@ -394,6 +490,171 @@
       renderCurrentState();
     }
 
+    function toggleCardExpand(card) {
+      if (!state.compact) return;
+      const id = card.dataset.id;
+      if (state.expandedIds.has(id)) {
+        state.expandedIds.delete(id);
+      } else {
+        state.expandedIds.add(id);
+      }
+      const project = state.projects.find(item => item.id === id);
+      if (project) updateCard(card, project);
+    }
+
+    function flipReorder(grid, moveFn) {
+      const cards = Array.from(grid.children);
+      const firstRects = new Map(cards.map(el => [el, el.getBoundingClientRect()]));
+      moveFn();
+      cards.forEach(el => {
+        if (el.classList.contains('drag-placeholder')) return;
+        const first = firstRects.get(el);
+        const last = el.getBoundingClientRect();
+        const dx = first.left - last.left;
+        const dy = first.top - last.top;
+        if (!dx && !dy) return;
+        el.style.transition = 'none';
+        el.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
+        el.getBoundingClientRect();
+        el.style.transition = 'transform .18s cubic-bezier(.2, 0, 0, 1)';
+        el.style.transform = '';
+      });
+    }
+
+    function mergeVisibleOrder(projects, visibleIds) {
+      const visibleSet = new Set(visibleIds);
+      let cursor = 0;
+      return projects.map(item => (visibleSet.has(item.id) ? visibleIds[cursor++] : item.id));
+    }
+
+    async function persistOrder(visibleIds) {
+      const previousProjects = state.projects;
+      const mergedIds = mergeVisibleOrder(previousProjects, visibleIds);
+      const byId = new Map(previousProjects.map(item => [item.id, item]));
+      state.projects = mergedIds.map(id => byId.get(id)).filter(Boolean);
+      state.reordering = true;
+      try {
+        const payload = await api('/api/projects/reorder', {
+          method: 'PUT',
+          body: JSON.stringify({ ids: mergedIds })
+        });
+        render(payload);
+      } catch (error) {
+        state.projects = previousProjects;
+        renderCurrentState();
+        showToast(error.message, 'error');
+      } finally {
+        state.reordering = false;
+      }
+    }
+
+    function startDrag(event, handle) {
+      if (event.button !== 0 || state.dragging || state.reordering) return;
+      const card = handle.closest('.project-card');
+      const grid = card && card.parentElement;
+      if (!card || !grid || grid.children.length < 2) return;
+
+      event.preventDefault();
+      state.dragging = true;
+      const pointerId = event.pointerId;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const rect = card.getBoundingClientRect();
+      const initialCards = Array.from(grid.children);
+      const initialIds = initialCards.map(el => el.dataset.id);
+
+      const ghost = card.cloneNode(true);
+      ghost.classList.add('drag-ghost');
+      ghost.style.width = `${rect.width}px`;
+      ghost.style.height = `${rect.height}px`;
+      ghost.style.left = `${rect.left}px`;
+      ghost.style.top = `${rect.top}px`;
+      ghost.style.transform = 'translate3d(0, 0, 0) scale(1.02)';
+      document.body.append(ghost);
+
+      card.classList.add('drag-placeholder');
+      document.body.classList.add('is-dragging');
+      try { handle.setPointerCapture(pointerId); } catch (_) {}
+
+      const findTarget = (clientX, clientY) => {
+        const gridRect = grid.getBoundingClientRect();
+        const x = clientX - gridRect.left;
+        const y = clientY - gridRect.top;
+        for (const sibling of grid.children) {
+          if (sibling === card) continue;
+          const left = sibling.offsetLeft;
+          const top = sibling.offsetTop;
+          if (x >= left && x <= left + sibling.offsetWidth && y >= top && y <= top + sibling.offsetHeight) {
+            return sibling;
+          }
+        }
+        return null;
+      };
+
+      const onMove = moveEvent => {
+        if (moveEvent.pointerId !== pointerId) return;
+        const dx = moveEvent.clientX - startX;
+        const dy = moveEvent.clientY - startY;
+        ghost.style.transform = `translate3d(${dx}px, ${dy}px, 0) scale(1.02)`;
+
+        if (moveEvent.clientY < 64) window.scrollBy(0, -12);
+        else if (moveEvent.clientY > window.innerHeight - 64) window.scrollBy(0, 12);
+
+        const target = findTarget(moveEvent.clientX, moveEvent.clientY);
+        if (!target) return;
+        const children = Array.from(grid.children);
+        const cardIndex = children.indexOf(card);
+        const targetIndex = children.indexOf(target);
+        if (cardIndex < 0 || targetIndex < 0 || cardIndex === targetIndex) return;
+        flipReorder(grid, () => {
+          grid.insertBefore(card, cardIndex < targetIndex ? target.nextSibling : target);
+        });
+      };
+
+      const finish = cancelled => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onCancel);
+        window.removeEventListener('keydown', onKeyDown);
+        try { handle.releasePointerCapture(pointerId); } catch (_) {}
+
+        ghost.remove();
+        card.classList.remove('drag-placeholder');
+        document.body.classList.remove('is-dragging');
+        Array.from(grid.children).forEach(el => {
+          el.style.transition = '';
+          el.style.transform = '';
+        });
+        state.dragging = false;
+
+        if (cancelled) {
+          flipReorder(grid, () => {
+            initialCards.forEach(el => grid.append(el));
+          });
+          return;
+        }
+        const nextIds = Array.from(grid.children).map(el => el.dataset.id);
+        if (nextIds.some((id, index) => id !== initialIds[index])) {
+          persistOrder(nextIds);
+        }
+      };
+
+      const onUp = upEvent => {
+        if (upEvent.pointerId === pointerId) finish(false);
+      };
+      const onCancel = cancelEvent => {
+        if (cancelEvent.pointerId === pointerId) finish(true);
+      };
+      const onKeyDown = keyEvent => {
+        if (keyEvent.key === 'Escape') finish(true);
+      };
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onCancel);
+      window.addEventListener('keydown', onKeyDown);
+    }
+
     function hasActiveSelection() {
       if (state.selectingText) return true;
       const selection = window.getSelection();
@@ -408,12 +669,14 @@
     async function refresh(silent = false, force = false) {
       if (
         state.refreshing ||
+        state.dragging ||
+        state.reordering ||
         (!force && state.loaded && (document.hidden || !state.hasRunningProjects || hasActiveSelection()))
       ) return;
       state.refreshing = true;
       try {
         const payload = await api('/api/projects');
-        if (force || !hasActiveSelection()) render(payload);
+        if (!state.dragging && !state.reordering && (force || !hasActiveSelection())) render(payload);
       } catch (error) {
         if (!silent) showToast(error.message, 'error');
       } finally {
@@ -497,6 +760,10 @@
       if (!card) return;
       const id = card.dataset.id;
       const action = button.dataset.action;
+      if (action === 'toggle-expand') {
+        toggleCardExpand(card);
+        return;
+      }
       const project = state.projects.find(item => item.id === id);
       if (!project) return;
       if (action === 'open') {
@@ -523,6 +790,7 @@
       try {
         if (action === 'delete') {
           await api(`/api/projects/${id}`, { method: 'DELETE' });
+          state.expandedIds.delete(id);
           showToast('项目已删除');
         } else {
           await api(`/api/projects/${id}/${action}`, { method: 'POST' });
@@ -537,6 +805,13 @@
     }
 
     addButton.addEventListener('click', beginAdd);
+    compactButton.addEventListener('click', () => {
+      state.compact = !state.compact;
+      if (!state.compact) state.expandedIds.clear();
+      saveCompactMode(state.compact);
+      syncCompactMode();
+      renderCurrentState();
+    });
     document.querySelector('#project-filters').addEventListener('click', event => {
       const button = event.target.closest('[data-filter]');
       if (button) handleFilter(button);
@@ -544,9 +819,22 @@
     content.addEventListener('click', event => {
       if (event.target.closest('.empty-add')) beginAdd();
       const action = event.target.closest('[data-action]');
-      if (action) handleAction(action);
+      if (action) {
+        handleAction(action);
+        return;
+      }
+      if (state.compact && !event.target.closest('button')) {
+        const head = event.target.closest('.project-head');
+        const card = head && head.closest('.project-card');
+        if (card) toggleCardExpand(card);
+      }
     });
-    content.addEventListener('pointerdown', () => {
+    content.addEventListener('pointerdown', event => {
+      const handle = event.target.closest('.drag-handle');
+      if (handle) {
+        startDrag(event, handle);
+        return;
+      }
       state.selectingText = true;
     });
     window.addEventListener('pointerup', () => {
@@ -563,5 +851,5 @@
       if (!document.hidden) refresh(true, true);
     });
 
+    syncCompactMode();
     refresh();
-  
