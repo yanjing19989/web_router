@@ -649,3 +649,44 @@ def test_project_reorder_api_and_validation(tmp_path: Path, monkeypatch) -> None
         assert client.put("/api/projects/reorder", json={"ids": [ids[0], ids[0], ids[1]]}).status_code == 422
         assert client.put("/api/projects/reorder", json={"ids": [ids[0], ids[1], "unknown"]}).status_code == 422
         assert client.put("/api/projects/reorder", json={"bad": []}).status_code == 422
+
+
+def test_find_project_icon_skips_heavy_dirs_and_uses_cache(tmp_path: Path, monkeypatch) -> None:
+    project_dir = tmp_path / "npm-app"
+    (project_dir / "node_modules" / "pkg").mkdir(parents=True)
+    (project_dir / "node_modules" / "pkg" / "favicon.ico").write_bytes(b"dep-icon")
+    (project_dir / ".venv" / "lib").mkdir(parents=True)
+    (project_dir / ".venv" / "lib" / "icon.png").write_bytes(b"venv-icon")
+    (project_dir / "dist" / "assets").mkdir(parents=True)
+    built_icon = project_dir / "dist" / "assets" / "favicon-abc123.svg"
+    built_icon.write_bytes(b"<svg></svg>")
+
+    launcher._ICON_CACHE.clear()
+    found, mtime_ns = launcher.find_project_icon(project_dir)
+    assert found == built_icon
+    assert mtime_ns > 0
+
+    # Cached positive hit should only stat the icon file without rescanning
+    scan_calls = 0
+    real_search = launcher._search_project_icon
+
+    def counting_search(root: Path):
+        nonlocal scan_calls
+        scan_calls += 1
+        return real_search(root)
+
+    monkeypatch.setattr(launcher, "_search_project_icon", counting_search)
+    found_again, _ = launcher.find_project_icon(project_dir)
+    assert found_again == built_icon
+    assert scan_calls == 0
+
+    # Deleting the cached icon triggers a rescan and returns None (ignoring node_modules/.venv)
+    built_icon.unlink()
+    found_after_delete, mtime_after_delete = launcher.find_project_icon(project_dir)
+    assert found_after_delete is None
+    assert mtime_after_delete == 0
+    assert scan_calls == 1
+
+    # Negative cache prevents repeated rescans within TTL
+    assert launcher.find_project_icon(project_dir) == (None, 0)
+    assert scan_calls == 1

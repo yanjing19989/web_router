@@ -10,6 +10,7 @@ import os
 import re
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -706,9 +707,86 @@ ICON_MIME_TYPES = {
     ".webp": "image/webp",
 }
 
-_ICON_CACHE_TTL = 5.0
+_ICON_NAME_RE = re.compile(
+    r"^(?:favicon|icon)(?:[_-][A-Za-z0-9_-]+)?\.(?:ico|png|svg|webp)$",
+    re.IGNORECASE,
+)
+_ICON_PRIORITY_DIRS = ("public", "static", "assets", "dist", "build")
+_ICON_SKIP_DIRS = {
+    "node_modules",
+    "venv",
+    "env",
+    "__pycache__",
+    "site-packages",
+    "target",
+    "vendor",
+}
+_ICON_MAX_DEPTH = 3
+_ICON_NEGATIVE_CACHE_TTL = 30.0
 _ICON_CACHE: dict[str, tuple[float, Path | None, int]] = {}
 _ICON_CACHE_LOCK = threading.Lock()
+
+
+def _scan_dir_for_icon(directory: Path) -> tuple[Path | None, int, list[Path]]:
+    matches: list[os.DirEntry[str]] = []
+    subdirs: list[Path] = []
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                name = entry.name
+                try:
+                    if _ICON_NAME_RE.fullmatch(name) and entry.is_file():
+                        matches.append(entry)
+                    elif (
+                        not name.startswith(".")
+                        and name.casefold() not in _ICON_SKIP_DIRS
+                        and entry.is_dir(follow_symlinks=False)
+                    ):
+                        subdirs.append(Path(entry.path))
+                except OSError:
+                    continue
+    except OSError:
+        return None, 0, []
+
+    if matches:
+        matches.sort(key=lambda item: item.name.casefold())
+        for match in matches:
+            try:
+                return Path(match.path), match.stat().st_mtime_ns, []
+            except OSError:
+                continue
+    subdirs.sort(key=lambda item: item.name.casefold())
+    return None, 0, subdirs
+
+
+def _search_project_icon(root: Path) -> tuple[Path | None, int]:
+    if not root.is_dir():
+        return None, 0
+
+    found, mtime_ns, root_subdirs = _scan_dir_for_icon(root)
+    if found is not None:
+        return found, mtime_ns
+
+    priority_rank = {name: index for index, name in enumerate(_ICON_PRIORITY_DIRS)}
+    root_subdirs.sort(
+        key=lambda item: (
+            priority_rank.get(item.name.casefold(), len(priority_rank)),
+            item.name.casefold(),
+        )
+    )
+
+    queue: collections.deque[tuple[Path, int]] = collections.deque(
+        (subdir, 1) for subdir in root_subdirs
+    )
+    while queue:
+        current, depth = queue.popleft()
+        found, mtime_ns, subdirs = _scan_dir_for_icon(current)
+        if found is not None:
+            return found, mtime_ns
+        if depth < _ICON_MAX_DEPTH:
+            for subdir in subdirs:
+                queue.append((subdir, depth + 1))
+    return None, 0
 
 
 def find_project_icon(path: str | Path, use_cache: bool = True) -> tuple[Path | None, int]:
@@ -717,40 +795,21 @@ def find_project_icon(path: str | Path, use_cache: bool = True) -> tuple[Path | 
     if use_cache:
         with _ICON_CACHE_LOCK:
             cached = _ICON_CACHE.get(key)
-            if cached is not None and (now - cached[0]) < _ICON_CACHE_TTL:
-                return cached[1], cached[2]
+        if cached is not None:
+            cached_at, cached_path, _ = cached
+            if cached_path is not None:
+                try:
+                    info = cached_path.stat()
+                    if stat.S_ISREG(info.st_mode):
+                        with _ICON_CACHE_LOCK:
+                            _ICON_CACHE[key] = (now, cached_path, info.st_mtime_ns)
+                        return cached_path, info.st_mtime_ns
+                except OSError:
+                    pass
+            elif (now - cached_at) < _ICON_NEGATIVE_CACHE_TTL:
+                return None, 0
 
-    root = Path(path)
-    found: Path | None = None
-    mtime_ns = 0
-    if root.is_dir():
-        hashed_icon_pattern = re.compile(
-            r"^(?:favicon|icon)(?:[_-][A-Za-z0-9_-]+)?\.(?:ico|png|svg|webp)$",
-            re.IGNORECASE,
-        )
-        search_roots = [root]
-        for directory_name in ("public", "dist", "build", "static", "assets"):
-            directory = root / directory_name
-            if directory.is_dir():
-                search_roots.append(directory)
-        for search_root in search_roots:
-            try:
-                candidates = sorted(
-                    (item for item in search_root.rglob("*") if item.is_file()),
-                    key=lambda item: str(item).casefold(),
-                )
-            except OSError:
-                continue
-            for candidate in candidates:
-                if hashed_icon_pattern.fullmatch(candidate.name):
-                    try:
-                        found = candidate
-                        mtime_ns = candidate.stat().st_mtime_ns
-                        break
-                    except OSError:
-                        continue
-            if found is not None:
-                break
+    found, mtime_ns = _search_project_icon(Path(path))
     with _ICON_CACHE_LOCK:
         _ICON_CACHE[key] = (now, found, mtime_ns)
     return found, mtime_ns
@@ -1036,14 +1095,16 @@ class LauncherRequestHandler(BaseHTTPRequestHandler):
                 icon_match = re.fullmatch(r"/api/projects/([^/]+)/icon", path)
                 if icon_match:
                     project = self.service.require_project(icon_match.group(1))
-                    icon_path, _ = find_project_icon(project["path"], use_cache=False)
+                    icon_path, _ = find_project_icon(project["path"])
                     if icon_path is None:
                         raise LauncherError(404, "项目图标不存在")
                     ctype = ICON_MIME_TYPES.get(
                         icon_path.suffix.lower(),
                         mimetypes.guess_type(str(icon_path))[0] or "application/octet-stream",
                     )
-                    self._send_file(icon_path, ctype, "no-cache")
+                    has_version = bool(urllib.parse.parse_qs(parsed.query).get("v"))
+                    cache_control = "private, max-age=3600" if has_version else "no-cache"
+                    self._send_file(icon_path, ctype, cache_control)
                     return
 
             elif method == "POST":
